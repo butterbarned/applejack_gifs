@@ -3,6 +3,7 @@
 # and leaves your code, cache and Caddy configuration alone.
 #
 #   sudo ./install.sh gif.example.com https://github.com/YOU/asset-tools.git [branch]
+#   sudo CORS_ORIGIN=https://YOU.github.io ./install.sh api.example.com https://github.com/YOU/asset-tools.git   (page on GitHub Pages)
 #
 # It creates the unprivileged user, clones the code, makes a Python environment (with Pillow), installs the
 # page as a systemd service and the 5-minute update timer. Caddy (HTTPS) and the game files are separate
@@ -17,8 +18,10 @@ APP=$BASE/app
 CACHE=$BASE/cache
 USER_=assettools
 PORT=8765
+CORS_ORIGIN=${CORS_ORIGIN:-}   # e.g. https://YOU.github.io: the site whose page may call this server from the browser
 
 [ "$(id -u)" -eq 0 ] || { echo "run this with sudo" >&2; exit 1; }
+case "$CORS_ORIGIN" in ""|https://[a-zA-Z0-9.-]*|http://localhost:[0-9]*|http://127.0.0.1:[0-9]*) ;; *) echo "CORS_ORIGIN must look like https://YOU.github.io (no path, no trailing slash)" >&2; exit 1;; esac
 case "$DOMAIN" in *[!a-zA-Z0-9.-]*|"") echo "that does not look like a domain name: $DOMAIN" >&2; exit 1;; esac
 
 echo "== packages"
@@ -42,7 +45,8 @@ runuser -u "$USER_" -- "$BASE/venv/bin/pip" install -q --upgrade pip pillow \
   || echo "   (Pillow could not be installed; the built-in GIF encoder will be used)"
 
 echo "== services"
-sed -e "s/gif\.example\.com/$DOMAIN/g" -e "s/__PORT__/$PORT/g" "$APP/deploy/asset-gui.service" > /etc/systemd/system/asset-gui.service
+CORS_FLAG=""; [ -n "$CORS_ORIGIN" ] && CORS_FLAG="--cors-origin $CORS_ORIGIN"
+sed -e "s/gif\.example\.com/$DOMAIN/g" -e "s/__PORT__/$PORT/g" -e "s#__CORS__#$CORS_FLAG#g" "$APP/deploy/asset-gui.service" > /etc/systemd/system/asset-gui.service
 cp "$APP/deploy/asset-gui-update.service" "$APP/deploy/asset-gui-update.timer" /etc/systemd/system/
 chmod +x "$APP/deploy/update.sh"
 systemctl daemon-reload

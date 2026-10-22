@@ -12,8 +12,10 @@ Environment=PYTHONDONTWRITEBYTECODE=1
 # Listens on localhost only: Caddy (HTTPS) is the only thing that talks to it.
 # --trust-proxy: take the visitor's address from the header Caddy sets (needed for the per-visitor rate limit).
 # --allowed-host: answer only for your own site name.
+# The extra word on the ExecStart line below is a placeholder: install.sh turns it into the flag that lets a page hosted on
+# GitHub Pages call this server (when you give it CORS_ORIGIN), or removes it.
 ExecStart=/srv/asset-tools/venv/bin/python -u asset_gui.py --public --host 127.0.0.1 --port __PORT__ \
-    --cache /srv/asset-tools/cache --build 1830 --trust-proxy --allowed-host gif.example.com \
+    --cache /srv/asset-tools/cache --build 1830 --trust-proxy --allowed-host gif.example.com __CORS__ \
     --max-concurrent 2 --rate 40 --max-scale 3
 Restart=on-failure
 RestartSec=3

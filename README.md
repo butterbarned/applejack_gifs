@@ -96,7 +96,8 @@ python asset_gui.py --cache cache --build 1830 --no-browser --port 8765
 `python asset_gui.py --public` is an internet-facing mode (GIF maker only: no script runner, no cache-folder changes,
 no server-side saves, no downloads, rate limits and a render queue). `deploy/DEPLOY.md` is a step-by-step guide for an
 Oracle (or any Ubuntu) server with Caddy for HTTPS and automatic updates from GitHub, including a rollback if a
-new version fails. The private page described below is still the default and must never be exposed directly.
+new version fails. The page can also be hosted on GitHub Pages while the server only does the drawing (`site/build.py`,
+`.github/workflows/pages.yml`, section 9 of the guide). The private page described below is still the default and must never be exposed directly.
 
 ---
 
@@ -152,6 +153,17 @@ Not covered: the game client itself (`ajclient.swf`), masterpieces, subtitles, p
 ```
 
 Item ids: find them by name with `--find` (below).
+
+### Something missing, or errors about missing files?
+
+```
+python mirror_assets.py --doctor --out cache      checks everything the GIF maker needs and prints the exact fix command
+python mirror_assets.py --forget-misses --out cache   forgets "not on the CDN" answers (downloaded files stay)
+```
+To list animals, items and names the page needs five small files (definition packs 1000, 1003, 1027 and 10230, and
+`paletteData`: all fetched by `--types defs`), plus, for each animal you want to pick, its body, eyes and pattern pictures
+(`--types avatars`). The cache folder you give the page or the scripts must be the one that **contains** the `1830` folder.
+The doctor reports which of these is missing, damaged or wrongly remembered as absent.
 
 ### What do I have? (no network)
 

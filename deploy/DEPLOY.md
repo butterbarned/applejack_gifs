@@ -144,6 +144,52 @@ visitors then need your shared login. Good while you are deciding who the site i
 * Keep the machine updated (`sudo apt install unattended-upgrades`), use SSH keys only, and consider putting Cloudflare in front if the site gets popular.
 * If you change the Caddy setup, keep `--trust-proxy` only while Caddy (or another proxy you control) is the only way in: the rate limit trusts the address in `X-Forwarded-For`.
 
+## 9. The page on GitHub Pages (optional)
+
+GitHub Pages serves only static files, so it can host the **page** while your Oracle server does the **drawing**:
+
+```
+ visitor ──▶ https://YOU.github.io/asset-tools/   (the page: GitHub Pages)
+                │  the page's JavaScript fetch()es
+                ▼
+          https://api.your-domain.com             (Caddy ▶ asset_gui.py --public: your Oracle server)
+```
+
+The page already does this: `site/build.py` builds it with your server's address written into `config.js`, and every
+request goes to `API_BASE + path`. Two things must be true on the server side, and **a bare IP address is not enough**:
+
+* **The server needs an HTTPS name.** GitHub Pages is https, and browsers refuse to let an https page call a plain
+  `http://1.2.3.4`. So give the server a name (a subdomain of your domain, e.g. `api.your-domain.com`, or a free
+  one such as `yourname.duckdns.org`), point it at the server's IP, and let Caddy get its certificate (steps 2.4 and 2.6,
+  using that name).
+* **The server must say your page may call it (CORS).** Without that the browser blocks the answers. The page's
+  *origin* is just the scheme and host, **no path and no trailing slash**: for `https://YOU.github.io/asset-tools/` it is
+  `https://YOU.github.io` (with a custom domain it is that domain). Tell the installer:
+  ```bash
+  sudo CORS_ORIGIN=https://YOU.github.io /srv/asset-tools/app/deploy/install.sh api.your-domain.com https://github.com/YOU/asset-tools.git
+  ```
+  (running it again just rewrites the service file). Only that origin may use the API from a browser; browser requests from
+  any other website get a 403.
+
+Then on GitHub:
+
+1. Repository **Settings → Pages → Build and deployment → Source: "GitHub Actions"**.
+2. **Settings → Secrets and variables → Actions → Variables → New repository variable**: name `API_BASE`, value
+   `https://api.your-domain.com` (the server's address, **https**, no path).
+3. Push to `main` (or run the *pages* workflow from the Actions tab). A minute later the site is at
+   `https://YOU.github.io/asset-tools/`.
+
+From then on one `git push` updates both halves: the *pages* workflow republishes the page, and the server's timer pulls the
+new backend (step 5). To point the page at a different server, change the `API_BASE` variable and run the workflow again.
+
+Notes:
+* The server's own address still serves the same page directly, as a fallback.
+* A GitHub Pages site is public even if the repository is private (on normal accounts). The `basic_auth` option in step 7 does
+  **not** work with a page hosted on Pages (browsers cannot ask for the password on those cross-site requests), so for a
+  private site use the server's own page instead.
+* To try it on your own computer first: `python site/build.py --api http://127.0.0.1:8793 --allow-http --out dist`, serve `dist`
+  (`python -m http.server 9101 -d dist`) and start the server with `--public --port 8793 --cors-origin http://127.0.0.1:9101`.
+
 ## Troubleshooting
 
 | you see | check |
@@ -155,4 +201,6 @@ visitors then need your shared login. Good while you are deciding who the site i
 | "Could not load the game data" | the cache is empty or in the wrong place: step 3, and `--cache` in the service file |
 | an avatar is missing from the list | its files are not in the cache: download it (step 3) |
 | an item is missing from a picture ("not downloaded here") | the clothing files for that avatar are not downloaded |
+| page on GitHub Pages says "Could not reach the server" | open `https://api.your-domain.com/healthz` in a browser (must say ok: DNS and certificate); then the CORS origin: `systemctl cat asset-gui | grep cors-origin` must show exactly the page's origin (`https://YOU.github.io`, no path, no slash); blocked origins are logged as 403 in `journalctl -u asset-gui` |
+| the *pages* workflow fails with "Set the repository variable API_BASE" | step 2 of section 9 |
 | updates do not arrive | `systemctl list-timers asset-gui-update.timer`, `journalctl -u asset-gui-update`; private repo needs the deploy key |

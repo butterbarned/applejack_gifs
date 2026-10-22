@@ -19,3 +19,5 @@ jobs:
           python tests/test_encoders.py
       - name: the scripts can describe their own options
         run: python asset_gui.py --dump-schema | python -c "import sys,json; d=json.load(sys.stdin); print([s['name'] for s in d['scripts']]); assert len(d['scripts'])>=4"
+      - name: the static site builds
+        run: python site/build.py --api https://api.example.com --out /tmp/site && test -s /tmp/site/index.html && grep -q API_BASE /tmp/site/config.js

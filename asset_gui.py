@@ -25,6 +25,10 @@ the GIF maker: no script tabs, no running programs, no cache-folder changes, no 
 colours and outfits stay in each visitor's browser), no downloads from the game CDN (unless you add
 --allow-download), a queue so a few visitors cannot use all the CPU, and a per-address rate limit. Put it
 behind a reverse proxy that does HTTPS (Caddy / nginx) and listen on 127.0.0.1.
+
+The page can also live somewhere else (GitHub Pages: see site/build.py and deploy/DEPLOY.md): give the
+server that site's address with --cors-origin https://YOU.github.io. Browsers from that site, and only
+that site, may then call the API; browser requests from any other website are refused.
 """
 import argparse, base64, collections, importlib, importlib.util, io, json, os, secrets, shlex, subprocess, sys
 import threading, time, traceback, urllib.parse, webbrowser, zipfile
@@ -35,7 +39,7 @@ SELF = os.path.basename(__file__)
 sys.path.insert(0, HERE)
 
 STATE = {"token": "", "cache": "cache", "build": "1830", "workdir": os.getcwd(), "port": 0, "explicit": False, "saves": os.path.join(HERE, "asset-gui-saves"),
-         "public": False, "trust_proxy": False, "allow_download": False, "allowed_hosts": [], "max_scale": 6, "rate": 40}
+         "public": False, "cors": [], "trust_proxy": False, "allow_download": False, "allowed_hosts": [], "max_scale": 6, "rate": 40}
 LOCK = threading.RLock()
 RENDER = threading.BoundedSemaphore(8)  # how many previews / exports may be drawn at once (--max-concurrent)
 
@@ -656,10 +660,41 @@ class Handler(BaseHTTPRequestHandler):
         if url.path not in allowed:
             self.send(404, json.dumps({"error": "not found"}))
             return False
+        if url.path != "/healthz" and not self.origin_allowed():
+            self.send(403, json.dumps({"error": "This site is not allowed to use this server."}))
+            return False
         if url.path != "/healthz" and rate_limited(self.addr(), url.path):
             self.send(429, json.dumps({"error": "Too many requests. Wait a minute and try again."}), extra={"Retry-After": "30"})
             return False
         return True
+
+    def origin_allowed(self):
+        """public mode: a browser request carries the address of the site whose page made it (Origin).
+        fine if there is none (curl, a visitor's own address bar), if it is this server's own page,
+        or if it is one of --cors-origin. anything else is some other website using our API: refused."""
+        o = self.headers.get("Origin")
+        if not o or o in STATE["cors"]:
+            return True
+        return urllib.parse.urlparse(o).netloc.lower() == (self.headers.get("Host") or "").lower()
+
+    def do_OPTIONS(self):
+        """the browser's question before a cross-site POST: may this page do that? yes, for --cors-origin sites only"""
+        o = self.headers.get("Origin")
+        if not STATE["public"] or not self.ok() or not o or o not in STATE["cors"]:
+            return self.send(403, "forbidden", "text/plain")
+        path = urllib.parse.urlparse(self.path).path
+        if path not in PUBLIC_GET and path not in PUBLIC_POST:
+            return self.send(404, json.dumps({"error": "not found"}))
+        if rate_limited(self.addr(), "/preflight"):
+            return self.send(429, json.dumps({"error": "Too many requests."}), extra={"Retry-After": "30"})
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", o)
+        self.send_header("Vary", "Origin")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Token")
+        self.send_header("Access-Control-Max-Age", "600")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def ok(self):
         host = (self.headers.get("Host") or "").split(":")[0].lower()
@@ -678,6 +713,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        o = self.headers.get("Origin")
+        if STATE["public"] and o and o in STATE["cors"]:
+            self.send_header("Access-Control-Allow-Origin", o)
+            self.send_header("Vary", "Origin")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "no-referrer")
@@ -822,6 +861,7 @@ def make_parser():
     ap.add_argument("--public", action="store_true", help="internet-facing mode: GIF maker only, rate limits, no downloads, no saves on the server (see deploy/DEPLOY.md)")
     ap.add_argument("--host", default="127.0.0.1", help="address to listen on (default 127.0.0.1; with --public put a reverse proxy in front)")
     ap.add_argument("--allowed-host", action="append", default=[], help="public mode: only answer requests for this site name (repeatable)")
+    ap.add_argument("--cors-origin", action="append", default=[], help="public mode: let the page hosted at this address call the API, e.g. https://YOU.github.io (repeatable; no path, no trailing slash)")
     ap.add_argument("--trust-proxy", action="store_true", help="public mode: take the visitor's address from X-Forwarded-For (only behind a proxy you control)")
     ap.add_argument("--allow-download", action="store_true", help="public mode: let visitors make the server fetch missing files from the game CDN (off by default)")
     ap.add_argument("--rate", type=int, default=40, help="public mode: previews/exports per visitor per minute (default 40)")
@@ -841,7 +881,7 @@ def main():
     global RENDER
     if a.public:
         STATE.update(public=True, token="", trust_proxy=a.trust_proxy, allow_download=a.allow_download,
-                     allowed_hosts=[h.lower() for h in a.allowed_host], max_scale=max(1, min(6, a.max_scale)), rate=max(1, a.rate))
+                     allowed_hosts=[h.lower() for h in a.allowed_host], cors=[o.rstrip("/") for o in a.cors_origin], max_scale=max(1, min(6, a.max_scale)), rate=max(1, a.rate))
         RENDER = threading.BoundedSemaphore(max(1, a.max_concurrent))
     elif a.host not in ("127.0.0.1", "localhost", "::1"):
         sys.exit("--host %s would open the private tools (script runner, cache folder, saves) to the network.\n"
@@ -851,8 +891,9 @@ def main():
     srv.daemon_threads = True
     port = srv.server_address[1]
     if a.public:
-        print("Asset tools PUBLIC page on http://%s:%d/  (cache %s, build %s)\n  downloads from the CDN: %s; %d draws at once; %d previews/exports per visitor per minute\n  behind a reverse proxy? add --trust-proxy and --allowed-host YOUR.SITE"
-              % (a.host, port, STATE["cache"], a.build, "ON" if a.allow_download else "off", max(1, a.max_concurrent), STATE["rate"]), flush=True)
+        print("Asset tools PUBLIC page on http://%s:%d/  (cache %s, build %s)\n  downloads from the CDN: %s; %d draws at once; %d previews/exports per visitor per minute\n  pages allowed to call it from elsewhere: %s\n  behind a reverse proxy? add --trust-proxy and --allowed-host YOUR.SITE"
+              % (a.host, port, STATE["cache"], a.build, "ON" if a.allow_download else "off", max(1, a.max_concurrent), STATE["rate"],
+                 ", ".join(STATE["cors"]) or "none"), flush=True)
         try:
             srv.serve_forever()
         except KeyboardInterrupt:
@@ -928,9 +969,10 @@ input.bad{border-color:var(--bad)!important}textarea.code{font:12px ui-monospace
 <main id="main"></main>
 <script>
 const TOKEN="__TOKEN__";
+const API=String(window.API_BASE||'').replace(/\/+$/,'');   // set by config.js on a static site; empty when the server serves the page itself
 const $=(s,r=document)=>r.querySelector(s);
 function el(tag,attrs={},...kids){const e=document.createElement(tag);for(const[k,v]of Object.entries(attrs||{})){if(k==='class')e.className=v;else if(k==='text')e.textContent=v;else if(k.startsWith('on'))e.addEventListener(k.slice(2),v);else if(v!==false&&v!=null)e.setAttribute(k,v===true?'':v)}for(const kid of kids.flat()){if(kid==null)continue;e.append(kid.nodeType?kid:document.createTextNode(String(kid)))}return e}
-async function api(path,opt={}){const r=await fetch(path,{...opt,headers:{'X-Token':TOKEN,...(opt.body?{'Content-Type':'application/json'}:{}),...(opt.headers||{})}});if(!r.ok){let m='';try{m=(await r.json()).error}catch(e){m=await r.text()}throw new Error(m||('HTTP '+r.status))}return r}
+async function api(path,opt={}){const r=await fetch(API+path,{...opt,headers:{...(TOKEN?{'X-Token':TOKEN}:{}),...(opt.body?{'Content-Type':'application/json'}:{}),...(opt.headers||{})}});if(!r.ok){let m='';try{m=(await r.json()).error}catch(e){m=await r.text()}throw new Error(m||('HTTP '+r.status))}return r}
 const getJ=async p=>(await api(p)).json();
 const postJ=async(p,b,signal)=>(await api(p,{method:'POST',body:JSON.stringify(b),signal}));
 const store={get(k,d){try{const v=localStorage.getItem(k);return v==null?d:JSON.parse(v)}catch(e){return d}},set(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}}};
@@ -951,7 +993,7 @@ $('#cfgUse').onclick=()=>useConf();$('#cfgCache').addEventListener('keydown',e=>
 
 /* ---------- saved colours / share codes ---------- */
 let SAVES={colors:{},outfits:{}};
-window.PUBLIC=false;window.PUBLIC_DL=false;
+window.PUBLIC=!!API;window.PUBLIC_DL=false;   // a page hosted elsewhere is by definition talking to a public server
 const localSaves=()=>{const v=store.get('saves',{});return{colors:v.colors||{},outfits:v.outfits||{}}};
 const loadSaves=async()=>{if(window.PUBLIC){SAVES=localSaves();return}try{SAVES=await getJ('/api/saves')}catch(e){}};
 async function savesPost(body){   // private mode: the server's saves file; public mode: this browser only
@@ -1194,7 +1236,7 @@ function gifTab(){
       avSel.append(...avs.filter(a=>!window.PUBLIC||a.animations>0).map(a=>el('option',{value:a.id,text:a.name+' (#'+a.id+') · '+a.animations+' animation'+(a.animations===1?'':'s')+(window.PUBLIC?' available':' downloaded')})));
       if(S.avatar==null||!avs.some(a=>a.id===S.avatar))S.avatar=(avs.find(a=>a.animations>0)||avs[0]).id;avSel.value=S.avatar;
       if(window.PUBLIC&&!window.PUBLIC_DL){S.auto=false;autoChk.parentElement.style.display='none'}flip.checked=S.hflip;autoChk.checked=S.auto!==false;keepChk.checked=S.keep===true;scaleSel.value=S.scale;delay.value=S.delay;loop.checked=S.loop;bgSel.value=S.bgMode;bgCol.value=S.bg;bgCol.style.display=S.bgMode==='color'?'':'none';fmt.onchange();
-      await loadAvatar(true);loading(false);hcur=snap();undo.length=0;redo.length=0;updHist()}catch(e){loading(false);msg.innerHTML='';msg.append(el('span',{class:'err',text:'Could not load the game data: '+(e.message||e)+'. Is the cache folder right (see the top of the page)?'}))}};
+      await loadAvatar(true);loading(false);hcur=snap();undo.length=0;redo.length=0;updHist()}catch(e){loading(false);msg.innerHTML='';msg.append(el('span',{class:'err',text:'Could not load the game data: '+(e.message||e)+(window.PUBLIC?'. The server may be down, or may not allow this site.':'. Is the cache folder right (see the top of the page)?')}))}};
   init();window.gifReload=init;
   return root}
 
@@ -1203,7 +1245,7 @@ function gifTab(){
   try{const i=await getJ('/api/info');window.PUBLIC=!!i.public;window.PUBLIC_DL=!!i.download;
     if(i.public){$('#info').textContent='Pillow: '+(i.pillow?'yes':'no (built-in GIF encoder)');$('.cfg').style.display='none';tabsEl.style.display='none'}
     else{$('#info').textContent='scripts run in: '+i.workdir+' · Pillow: '+(i.pillow?'yes':'no (built-in GIF encoder)')+' · Python '+i.python;applyConf(i);
-      const saved=store.get('conf',null);if(!i.explicit&&saved&&(saved.cache!==i.cache||saved.build!==i.build)){$('#cfgCache').value=saved.cache;$('#cfgBuild').value=saved.build;await useConf(true)}}}catch(e){$('#info').textContent=String(e)}
+      const saved=store.get('conf',null);if(!i.explicit&&saved&&(saved.cache!==i.cache||saved.build!==i.build)){$('#cfgCache').value=saved.cache;$('#cfgBuild').value=saved.build;await useConf(true)}}}catch(e){$('#info').textContent=window.PUBLIC?'Could not reach the server'+(API?' at '+API:'')+': '+String(e.message||e):String(e);if(window.PUBLIC){$('.cfg').style.display='none';tabsEl.style.display='none'}}
   addTab('gif','GIF maker',gifTab());
   if(!window.PUBLIC){try{const sc=await getJ('/api/schema');for(const s of sc.scripts)addTab(s.name,s.name,scriptTab(s))}catch(e){addTab('err','Scripts',el('div',{class:'card err',text:String(e.message||e)}))}}
   const want=store.get('tab','gif');show(sections[want]?want:'gif');

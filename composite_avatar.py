@@ -77,13 +77,20 @@ class Data:
     def pack(self, did):
         p = self.path("defPacks", str(did))
         if not os.path.exists(p):
-            sys.exit("missing %s\nget it with: python mirror_assets.py --types defs --out %s" % (p, self.cache))
-        return M.read_def(p)
+            what = {1000: "the item list", 1003: "the animal list", 1027: "the layer list", 10230: "the English names"}.get(did, "definition pack %s" % did)
+            sys.exit("missing %s (defPack %s) in %s\nget it with: python mirror_assets.py --types defs --out %s\nor find out everything that is missing: python mirror_assets.py --doctor --out %s"
+                     % (what, did, self.cache, self.cache, self.cache))
+        try:
+            return M.read_def(p)
+        except Exception as e:
+            sys.exit("defPack %s (%s) is damaged (%s): a download was probably cut off.\nDelete this file and download again: %s\nthen: python mirror_assets.py --types defs --out %s\nor run: python mirror_assets.py --doctor --out %s"
+                     % (did, {1000: "items", 1003: "animals", 1027: "layers", 10230: "names"}.get(did, "definitions"), e, p, self.cache, self.cache))
 
     def palette(self):
         p = self.path("paletteData")
         if not os.path.exists(p):
-            sys.exit("missing %s\nget it with: python mirror_assets.py --types defs --out %s" % (p, self.cache))
+            sys.exit("missing the colour palette (paletteData) in %s\nget it with: python mirror_assets.py --types defs --out %s\nor find out everything that is missing: python mirror_assets.py --doctor --out %s"
+                     % (self.cache, self.cache, self.cache))
         raw = open(p, "rb").read()
         n = struct.unpack(">i", raw[:4])[0]
         return [struct.unpack(">I", raw[4 + i:8 + i])[0] & 0xFFFFFF for i in range(0, n, 4)]

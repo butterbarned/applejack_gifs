@@ -39,6 +39,12 @@ DOWNLOAD ONE THING (same words as --has below)
   python mirror_assets.py --get avatar 8                 that avatar's body/eyes/pattern files
   python mirror_assets.py --get icon 2346 | den 52 | media 44 | room party/venue_carnival | audio NAME
 
+SOMETHING IS MISSING OR WRONG?
+  python mirror_assets.py --doctor            checks the folder for everything the GIF maker needs and prints the
+                                              exact download command for whatever is missing
+  python mirror_assets.py --forget-misses     clears the downloader's memory of "not on the CDN" answers (use if
+                                              the CDN was refusing you, or after changing --build); files stay
+
 LOOK AT WHAT YOU HAVE (no network; reads --out)
   python mirror_assets.py --report                 counts per type, per avatar, what is missing
   python mirror_assets.py --report --verbose       also lists every item/room/track present
@@ -325,9 +331,14 @@ class Mirror:
                         stats["downloaded"] += 1
                         stats["bytes"] += len(body)
                         hits.add(k)
-                    elif status in (403, 404):
+                    elif status == 404:
                         stats["missing (404)"] += 1
                         miss_file.write(k + "\n")
+                    elif status == 403:
+                        # the CDN answers 404 for a name that does not exist; 403 means it is refusing us (blocked, rate
+                        # limited): NOT remembered as missing, so a later run asks again
+                        stats["forbidden (403)"] += 1
+                        failed.append(k)
                     else:
                         stats["failed"] += 1
                         failed.append(k)
@@ -362,6 +373,9 @@ class Mirror:
         print("  %s: asked %d in %ds | new %d (%.1f MB) | 404 %d | already had %d | known missing %d | failed %d" % (
             name, sent[0], secs, stats["downloaded"], stats["bytes"] / 1048576, stats["missing (404)"],
             stats["already have"], stats["known missing"], stats["failed"]))
+        if stats["forbidden (403)"]:
+            print("  !! the CDN refused %d requests (403). That usually means it is blocking or rate-limiting you: wait a while, use a lower "
+                  "--concurrency, and run the same command again (refused names are not remembered)." % stats["forbidden (403)"])
         return stats, hits
 
 
@@ -926,6 +940,118 @@ def report(m, plan, verbose):
         print("\n-- media ids: " + spans(med))
 
 
+# ------------------------------------------------------------------ doctor
+REQUIRED_DEFS = {1000: "items: clothing names and which animals can wear what",
+                 1003: "animals: the list of avatars and their colours",
+                 1027: "layers: which picture layer each item uses",
+                 10230: "English names for items, den items and animals"}
+STATE_FILES = ("misses-*.txt", "categories-*.json", "clothing-categories-*.json")
+
+
+def forget_state(m):
+    import glob
+    n = 0
+    for pat in STATE_FILES:
+        for f in glob.glob(os.path.join(m.state, pat)):
+            os.remove(f)
+            n += 1
+    print("removed %d bookkeeping files from %s (what was asked and answered 'not there'). Downloaded files were not touched." % (n, m.state))
+    print("Run your download command again: every name will be asked about once more.")
+
+
+def doctor(m, build):
+    out = m.out
+    print("cache folder: %s    build: %s" % (out, build))
+    root = os.path.join(out, build)
+    if not os.path.isdir(root):
+        print("\nPROBLEM: there is no '%s' folder inside that cache folder." % build)
+        print("  Use the folder that CONTAINS the '%s' folder (the one with %s/imageArrays/ inside it), or download first:" % (build, build))
+        print("  python mirror_assets.py --types defs --out %s --build %s" % (out, build))
+        return
+    problems = []
+
+    print("\n1. definition files the page needs to list animals, items and names")
+    packs = {}
+    for did, why in sorted(REQUIRED_DEFS.items()):
+        path = os.path.join(out, *hashed(build, "defPacks/%d" % did).split("/"))
+        if not os.path.isfile(path):
+            print("   MISSING  defPack %-5d %s" % (did, why))
+            problems.append("defs")
+            continue
+        try:
+            packs[did] = read_def(path)
+            print("   ok       defPack %-5d %s (%d entries)" % (did, why, len(packs[did])))
+        except Exception as e:
+            print("   BROKEN   defPack %-5d %s: %s" % (did, why, e))
+            print("            (a download was probably cut off: delete that file, then download again)  %s" % path)
+            problems.append("defs")
+    pal = os.path.join(out, *hashed(build, "paletteData").split("/"))
+    if os.path.isfile(pal) and os.path.getsize(pal) >= 1024:
+        print("   ok       paletteData (the 256 game colours)")
+    else:
+        print("   MISSING  paletteData (the 256 game colours)")
+        problems.append("defs")
+    if "defs" in problems:
+        print("   FIX:  python mirror_assets.py --types defs --out %s --build %s" % (out, build))
+        print("         (if it still says missing afterwards, see failed-defs.txt in %s and the note about 403 above)" % m.state)
+
+    print("\n2. pictures of each animal (body, eyes and pattern layers)")
+    if not all(k in packs for k in (1000, 1003, 1027)):
+        print("   cannot check yet: fix section 1 first")
+    else:
+        names = {str(k): v for k, v in packs.get(10230, {}).items() if isinstance(v, str)}
+        items = {r["id"]: r for r in packs[1000].values()}
+        slots = {int(r["id"]): int(r["layerId"]) for r in packs[1027].values()}
+        body = min(i for i, sl in slots.items() if sl == 1)
+        none, no_eyes, ok_count = [], [], 0
+        for r in sorted(packs[1003].values(), key=lambda r: int(r["id"])):
+            av = int(r["id"])
+            cats = [c for c in range(MAX_CATEGORY_SCAN) if os.path.isfile(os.path.join(root, "imageArrays", hash_name(str(pack_id(av, c, body)))))]
+            if not cats:
+                none.append(av)
+                continue
+            ok_count += 1
+            eyes = items.get(r.get("baseEyesId", "0"))
+            if eyes:
+                lay = int(eyes["layerDefId"])
+                gaps = [c for c in cats if not os.path.isfile(os.path.join(root, "imageArrays", hash_name(str(pack_id(av, c, lay)))))]
+                if gaps:
+                    no_eyes.append((av, len(gaps), len(cats)))
+        label = lambda a: "%d %s" % (a, names.get(packs[1003][str(a)]["titleStrRef"], "") if str(a) in packs[1003] else "")
+        print("   %d of %d animals have pictures." % (ok_count, len(packs[1003])))
+        if none:
+            print("   NOTHING downloaded for: %s" % ", ".join(str(a) for a in none))
+            print("   FIX:  python mirror_assets.py --types avatars --out %s --build %s%s" % (
+                out, build, "" if len(none) > 12 else "".join(" --avatar %d" % a for a in none)))
+            problems.append("avatars")
+        if no_eyes:
+            print("   missing their eyes in some animations: %s" % ", ".join("%d (%d of %d)" % x for x in no_eyes))
+            print("   FIX:  python mirror_assets.py --types avatars --out %s --build %s%s" % (out, build, "".join(" --avatar %d" % x[0] for x in no_eyes[:12])))
+            problems.append("eyes")
+
+    print("\n3. what the downloader remembers")
+    import glob
+    misses = sum(sum(1 for _ in open(f)) for f in glob.glob(os.path.join(m.state, "misses-*.txt")))
+    failed = {os.path.basename(f)[7:-4]: sum(1 for _ in open(f)) for f in glob.glob(os.path.join(m.state, "failed-*.txt"))}
+    cats_empty = []
+    cf = os.path.join(m.state, "categories-%s.json" % build)
+    if os.path.isfile(cf):
+        try:
+            cats_empty = [k for k, v in json.load(open(cf)).items() if not v]
+        except ValueError:
+            pass
+    print("   %d names are remembered as 'not on the CDN' (404)." % misses)
+    for t, n in failed.items():
+        print("   %d downloads of type '%s' failed last time (they are retried automatically): %s/failed-%s.txt" % (n, t, m.state, t))
+    if cats_empty:
+        print("   animals remembered as having NO animations: %s" % ", ".join(cats_empty))
+        problems.append("state")
+    if problems and ("avatars" in problems or "state" in problems):
+        print("   If you downloaded while the CDN was refusing you, or you changed --build, the remembered answers can be wrong.")
+        print("   Clear them (downloaded files stay) with:  python mirror_assets.py --forget-misses --out %s" % out)
+    print("\nverdict: %s" % ("everything the page needs is here" if not problems else "see the FIX lines above"))
+
+
 def make_parser():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--types", default="defs")
@@ -942,6 +1068,8 @@ def make_parser():
     ap.add_argument("--no-defs-fetch", action="store_true")
     ap.add_argument("--no-prune", action="store_true")
     ap.add_argument("--report", action="store_true")
+    ap.add_argument("--doctor", action="store_true")
+    ap.add_argument("--forget-misses", action="store_true")
     ap.add_argument("--verbose", action="store_true")
     ap.add_argument("--has", nargs="+", metavar="WORD")
     ap.add_argument("--find", nargs="+", metavar="WORD")
@@ -952,6 +1080,11 @@ def make_parser():
 
 def main():
     a = make_parser().parse_args()
+
+    if a.doctor or a.forget_misses:
+        m = Mirror(a.out, 1, create=False)
+        forget_state(m) if a.forget_misses else doctor(m, a.build)
+        return
 
     if a.report or a.has or a.find:
         a.no_defs_fetch = True  # looking only: never touches the network

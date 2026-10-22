@@ -1,0 +1,47 @@
+name: pages
+# Publishes the page to GitHub Pages whenever you push to main.
+# One-time setup (see deploy/DEPLOY.md, "The page on GitHub Pages"):
+#   1. Settings > Pages > Build and deployment > Source: "GitHub Actions"
+#   2. Settings > Secrets and variables > Actions > Variables > New repository variable:  API_BASE = https://api.your-domain.com
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: build the site
+        env:
+          API_BASE: ${{ vars.API_BASE }}
+        run: |
+          test -n "$API_BASE" || { echo "Set the repository variable API_BASE (Settings > Secrets and variables > Actions > Variables) to your server's https address."; exit 1; }
+          python site/build.py --api "$API_BASE" --out dist
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
