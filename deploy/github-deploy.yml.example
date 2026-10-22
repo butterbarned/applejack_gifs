@@ -1,0 +1,26 @@
+# OPTIONAL push-to-deploy. You do not need this: the 5-minute timer on the server already pulls new code.
+# Use it if you want the update to start the moment you push (and the push to show red if it fails).
+#
+# To use: copy to .github/workflows/deploy.yml, then in the repo's Settings > Secrets and variables > Actions add
+#   DEPLOY_HOST  the server's address       DEPLOY_USER  a user that may sudo update.sh
+#   DEPLOY_KEY   a private SSH key whose public half is in that user's authorized_keys
+# and let that user run exactly one command without a password (sudo visudo -f /etc/sudoers.d/asset-tools):
+#   deploy ALL=(root) NOPASSWD: /srv/asset-tools/app/deploy/update.sh
+name: deploy
+on:
+  push:
+    branches: [main]
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    needs: []           # add the "checks" job's name here if you keep ci.yml in the same workflow
+    steps:
+      - name: update the server
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          USER_NAME: ${{ secrets.DEPLOY_USER }}
+          KEY: ${{ secrets.DEPLOY_KEY }}
+        run: |
+          install -m 600 /dev/null key
+          printf '%s\n' "$KEY" > key
+          ssh -i key -o StrictHostKeyChecking=accept-new "$USER_NAME@$HOST" 'sudo /srv/asset-tools/app/deploy/update.sh'

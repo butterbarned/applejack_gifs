@@ -1,0 +1,12 @@
+# /etc/systemd/system/asset-gui-update.timer: look for new code every 5 minutes
+[Unit]
+Description=Check GitHub for new asset tools code
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+RandomizedDelaySec=30
+Persistent=true
+
+[Install]
+WantedBy=timers.target

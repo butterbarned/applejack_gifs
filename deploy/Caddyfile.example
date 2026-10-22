@@ -1,0 +1,26 @@
+# /etc/caddy/Caddyfile   (replace gif.example.com with your domain; its DNS A record must point at this server)
+# Caddy gets and renews the HTTPS certificate by itself. Ports 80 and 443 must be open (see DEPLOY.md).
+
+gif.example.com {
+	encode zstd gzip
+
+	# the page itself asks for small JSON bodies only
+	request_body {
+		max_size 256KB
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
+
+	# --- optional: keep the site private with one shared login (recommended while you are unsure about
+	# sharing game-derived pictures publicly). Make the hash with:  caddy hash-password
+	# basic_auth {
+	#	friends  PASTE_THE_HASH_HERE
+	# }
+
+	# Caddy puts the visitor's real address in X-Forwarded-For (replacing anything the visitor sent),
+	# which is what --trust-proxy in the service relies on.
+	reverse_proxy 127.0.0.1:8765
+}

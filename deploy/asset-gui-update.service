@@ -1,0 +1,9 @@
+# /etc/systemd/system/asset-gui-update.service: pulls new code from GitHub and restarts the page, rolling back on failure
+[Unit]
+Description=Update the asset tools from GitHub
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/srv/asset-tools/app/deploy/update.sh

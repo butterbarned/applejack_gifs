@@ -1,0 +1,39 @@
+# /etc/systemd/system/asset-gui.service   (install.sh fills in the domain and port)
+[Unit]
+Description=Asset tools GIF maker (public mode)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=assettools
+Group=assettools
+WorkingDirectory=/srv/asset-tools/app
+Environment=PYTHONDONTWRITEBYTECODE=1
+# Listens on localhost only: Caddy (HTTPS) is the only thing that talks to it.
+# --trust-proxy: take the visitor's address from the header Caddy sets (needed for the per-visitor rate limit).
+# --allowed-host: answer only for your own site name.
+ExecStart=/srv/asset-tools/venv/bin/python -u asset_gui.py --public --host 127.0.0.1 --port __PORT__ \
+    --cache /srv/asset-tools/cache --build 1830 --trust-proxy --allowed-host gif.example.com \
+    --max-concurrent 2 --rate 40 --max-scale 3
+Restart=on-failure
+RestartSec=3
+
+# the page only reads files, so the whole install can be read-only to it
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ReadOnlyPaths=/srv/asset-tools
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# one animation takes about 180 MB at most; leave room on the 1 GB machines
+MemoryMax=600M
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,25 @@
+# game files and everything made from them: never commit these (huge, and not ours to redistribute)
+cache/
+*-out/
+frames/
+den-out/
+avatar-out/
+swf-copies/
+*.swf
+*.zip
+
+# saved colours and outfits, local settings
+asset-gui-saves/
+.mirror/
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# editors / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
