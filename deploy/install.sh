@@ -50,7 +50,9 @@ sed -e "s/gif\.example\.com/$DOMAIN/g" -e "s/__PORT__/$PORT/g" -e "s#__CORS__#$C
 cp "$APP/deploy/asset-gui-update.service" "$APP/deploy/asset-gui-update.timer" /etc/systemd/system/
 chmod +x "$APP/deploy/update.sh"
 systemctl daemon-reload
-systemctl enable --now asset-gui.service asset-gui-update.timer
+systemctl enable asset-gui.service asset-gui-update.timer
+systemctl restart asset-gui.service      # also when it was already running, so a changed domain or setting takes effect
+systemctl start asset-gui-update.timer
 
 cat <<MSG
 

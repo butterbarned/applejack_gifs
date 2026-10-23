@@ -190,6 +190,26 @@ Notes:
 * To try it on your own computer first: `python site/build.py --api http://127.0.0.1:8793 --allow-http --out dist`, serve `dist`
   (`python -m http.server 9101 -d dist`) and start the server with `--public --port 8793 --cors-origin http://127.0.0.1:9101`.
 
+## 10. Changing the domain
+
+1. **DNS**: at your domain provider, point the new name at the server (an `A` record to the server's public IP). Check with
+   `dig +short your.new.domain` (or `nslookup`) before going on.
+2. **Caddy**: put the new name in `/etc/caddy/Caddyfile` instead of the old one, then
+   ```bash
+   sudo caddy validate --config /etc/caddy/Caddyfile && sudo systemctl reload caddy
+   ```
+   Caddy gets a certificate for the new name by itself (ports 80 and 443 must be open, step 2).
+3. **The page's service**: it only answers its own site name (`--allowed-host`), so change that too:
+   ```bash
+   sudo /srv/asset-tools/app/deploy/install.sh your.new.domain https://github.com/YOU/asset-tools.git
+   ```
+   (that rewrites the service file and restarts the page), or by hand:
+   `sudo sed -i 's/--allowed-host OLD.NAME/--allowed-host NEW.NAME/' /etc/systemd/system/asset-gui.service && sudo systemctl daemon-reload && sudo systemctl restart asset-gui`.
+4. **If the page is on GitHub Pages**, two more things: the server must allow the page's new address
+   (`CORS_ORIGIN=https://page.address sudo -E ... install.sh`, step 9) and the `API_BASE` repository variable must hold the
+   new API address; then run the *pages* workflow again.
+5. Check: `curl -fsS https://your.new.domain/healthz` prints `ok`, and the page opens.
+
 ## Troubleshooting
 
 | you see | check |
