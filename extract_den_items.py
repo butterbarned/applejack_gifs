@@ -215,7 +215,14 @@ def make_parser():
 
 
 def main():
-    a = make_parser().parse_args()
+    run(make_parser().parse_args())
+
+
+def run(a):
+    """unwrap (and, unless a.no_render, render) den items. `a` is what make_parser() gives (asset_gui.py builds one itself).
+    Several runs add to the same folder: meta.json is merged, not replaced. Returns {"swf": files written, "png": frames
+    written, "ffdec": whether ffdec was found}. Exits (SystemExit) with a message when the cache lacks what it needs."""
+    done, cmd = 0, None
 
     defp = os.path.join(a.cache, *M.hashed(a.build, "defPacks/1030").split("/"))
     if not os.path.exists(defp):
@@ -302,8 +309,16 @@ def main():
             finally:
                 shutil.rmtree(work, ignore_errors=True)
 
-    with open(os.path.join(a.out, "meta.json"), "w") as f:
-        json.dump(meta, f, indent=1)
+    meta_path = os.path.join(a.out, "meta.json")
+    try:
+        with open(meta_path) as f:
+            old = json.load(f)
+    except (OSError, ValueError):
+        old = {}
+    old.update(meta)  # a run with --item must not wipe what earlier runs wrote down
+    with open(meta_path, "w") as f:
+        json.dump(old, f, indent=1)
+    return {"swf": len(todo), "png": done, "ffdec": bool(cmd)}
 
 
 if __name__ == "__main__":

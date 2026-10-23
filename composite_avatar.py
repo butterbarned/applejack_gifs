@@ -35,8 +35,10 @@ HOW A LOOK IS BUILT (what the game does, from LayerBitmap / LayerAnim)
   category = one animation (idle, walk, ...). layerDefId 0 is that animation's sequence file.
   defPack 1027 gives each layerDefId a slot 1..10; slots are stacked in order.
   Default look: the body layer (slot 1), the avatar's eyes (def 1003 baseEyesId) and pattern
-  (basePatternId, if any). --wear ITEMID adds a clothing item (defPack 1000); an item takes the
-  slot of its layer, replacing whatever the avatar had there.
+  (basePatternId, if any). --wear ITEMID adds a clothing item (defPack 1000). Eyes and pattern replace
+  the avatar's own. In the clothing places (tail, legs, back, neck, head) up to THREE items can be worn, as in
+  Burrow's client: the first is drawn in the place's own position, the next ones right after it, each over the
+  one before, in the order of your --wear options; a 4th pushes the oldest off.
   Colours: each slot has four indexes into the 256-colour game palette (paletteData).
   Slots 1-3 use the avatar's colorLayer1/2/3; a worn item uses its own "colors" value
   (the item's default colours: the game uses the colour the player picked). Override with
@@ -125,13 +127,28 @@ def parse_colors(text):
     return [D.parse_hex(c) for c in cols]
 
 
+MAX_PER_SLOT = 3  # Burrow's patched client: up to three worn items in one place (head, neck, back, legs, tail)
+
+
 def build_look(data, avatar, wear, overrides):
-    """-> [(slot, layerDefId, palette)] sorted by slot, and a list of notes"""
+    """-> [(slot, layerDefId, palette)] in drawing order, and a list of notes.
+    Body, eyes and pattern (slots 1-3) are one at a time. In slots 4-8 (tail, legs, back, neck, head) up to three
+    items may be worn (Burrow's client): the first is drawn in the slot's own place, the 2nd and 3rd right after it,
+    each over the one before, in the order given. A 4th pushes the oldest one off."""
     av = data.avatars[avatar]
-    notes, layers = [], {}
+    notes, layers, extra = [], {}, {}
 
     def put(slot, layer, pal):
-        layers[slot] = (slot, layer, pal)
+        if slot <= 3:
+            layers[slot] = (slot, layer, pal)
+            return
+        worn = extra.setdefault(slot, [])
+        if any(w[1] == layer for w in worn):  # the same picture twice would only draw over itself
+            worn[:] = [w for w in worn if w[1] != layer]
+        worn.append((slot, layer, pal))
+        if len(worn) > MAX_PER_SLOT:
+            worn.pop(0)
+            notes.append("more than %d items in one place: the oldest one came off" % MAX_PER_SLOT)
 
     def av_pal(slot):
         return slot_palette(data.game, packed=int(av["colorLayer%d" % min(slot, 3)]))
@@ -159,9 +176,17 @@ def build_look(data, avatar, wear, overrides):
             slot_palette(data.game, packed=item_colors(row)) if slot > 3 else av_pal(slot)
         put(slot, layer, pal)
     for slot, cols in overrides.items():
+        pal = slot_palette(data.game, colors=cols)
         if slot in layers:
-            layers[slot] = (slot, layers[slot][1], slot_palette(data.game, colors=cols))
-    return [layers[s] for s in sorted(layers)], notes
+            layers[slot] = (slot, layers[slot][1], pal)
+        elif slot in extra:
+            extra[slot] = [(s, l, pal) for s, l, _ in extra[slot]]
+    out = []
+    for s in sorted(set(layers) | set(extra)):
+        if s in layers:
+            out.append(layers[s])
+        out.extend(extra.get(s, []))
+    return out, notes
 
 
 # ------------------------------------------------------------------ raw mode
@@ -327,11 +352,14 @@ def render_avatar(data, avatar, a, wear, overrides):
                 with open(os.path.join(folder, name), "wb") as fh:
                     fh.write(to_png(W, H, canvas, a.scale))
                 if a.raw:  # every layer as its own exact indexed PNG on the same canvas
-                    fbs = {slot: (f[idx] if isinstance(idx, int) and idx < len(f) else None) for slot, _, f in objs}
+                    fbs, seen = {}, {}
+                    for slot, _, f in objs:  # a 2nd or 3rd item in the same slot gets its own file (slot6_2)
+                        seen[slot] = seen.get(slot, 0) + 1
+                        fbs[(slot, seen[slot])] = f[idx] if isinstance(idx, int) and idx < len(f) else None
                     lv = raw_layer_values(fbs, flip)
                     if lv:
-                        for slot, vals in lv[4].items():
-                            ld = os.path.join(folder, "layers", "slot%d" % slot)
+                        for (slot, n), vals in lv[4].items():
+                            ld = os.path.join(folder, "layers", "slot%d" % slot + ("" if n == 1 else "_%d" % n))
                             os.makedirs(ld, exist_ok=True)
                             with open(os.path.join(ld, name), "wb") as fh:
                                 fh.write(D.indexed_png(lv[2], lv[3], vals, a.scale, D.raw_palette(a.raw)))

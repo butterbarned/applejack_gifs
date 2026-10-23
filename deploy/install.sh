@@ -30,7 +30,7 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git python3 python3-venv c
 
 echo "== user and folders"
 id "$USER_" >/dev/null 2>&1 || useradd --system --home-dir "$BASE" --create-home --shell /usr/sbin/nologin "$USER_"
-mkdir -p "$CACHE"
+mkdir -p "$CACHE" "$BASE/den-out"
 chown -R "$USER_:$USER_" "$BASE"
 
 echo "== code"

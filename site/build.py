@@ -31,7 +31,7 @@ def main():
     api = "%s://%s" % (u.scheme, u.netloc)
 
     csp = ("default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
-           "img-src 'self' data: blob:; connect-src %s; base-uri 'none'; form-action 'none'" % api)
+           "img-src 'self' data: blob: %s; connect-src %s; base-uri 'none'; form-action 'none'" % (api, api))
     html = asset_gui.PAGE.replace("__TOKEN__", "")
     marker = "<title>Asset tools</title>"
     if marker not in html:

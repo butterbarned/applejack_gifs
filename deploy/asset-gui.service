@@ -15,7 +15,7 @@ Environment=PYTHONDONTWRITEBYTECODE=1
 # The extra word on the ExecStart line below is a placeholder: install.sh turns it into the flag that lets a page hosted on
 # GitHub Pages call this server (when you give it CORS_ORIGIN), or removes it.
 ExecStart=/srv/asset-tools/venv/bin/python -u asset_gui.py --public --host 127.0.0.1 --port __PORT__ \
-    --cache /srv/asset-tools/cache --build 1830 --trust-proxy --allowed-host gif.example.com __CORS__ \
+    --cache /srv/asset-tools/cache --den /srv/asset-tools/den-out --build 1830 --trust-proxy --allowed-host gif.example.com __CORS__ \
     --max-concurrent 2 --rate 40 --max-scale 3
 Restart=on-failure
 RestartSec=3

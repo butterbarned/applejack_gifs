@@ -53,6 +53,12 @@ python asset_gui.py --cache cache --build 1830 --no-browser --port 8765
   each way; also Ctrl+Z, and Ctrl+Y or Ctrl+Shift+Z). A burst of quick edits, such as dragging a
   colour, counts as one step, and changing avatar is one step too. History starts fresh when the page
   loads or the cache folder changes.
+* **Den items tab.** Browse every den item in the game: search by name or id (a bare number means that exact id), filter
+  (with / without a picture, animated, free, members only), sort by id, name or price, and open one for its picture (animated
+  ones play, one button per view), price, members-only flag, group, type, layer, scale and the placement values. The list comes from the game's own
+  definitions; the **pictures come from `den-out/`**, which `extract_den_items.py` fills (`--den DIR` tells the page where it is). On
+  your own computer the page can also **draw a missing item on the spot** ("draw it now": downloads its files and runs ffdec, a few seconds) and
+  offer the `.swf` for download; in public mode it only shows pictures that are already in the folder, and nothing there can run programs.
 * **Colours are Burrow colour codes.** Burrow (like the game) stores a colour set as **four palette
   numbers (0-255) packed into one number**, first slot in the top byte:
   `code = n1*16777216 + n2*65536 + n3*256 + n4` (so palette numbers `0 0 255 1` are code `65281`).
@@ -248,7 +254,11 @@ order, each frame's top-left in the canvas). Options: `--cache DIR`, `--build N`
 `--scale N` (default 2; the game stores art at half size).
 
 How a look is built: body layer (slot 1) + the avatar's own eyes and pattern, then `--wear` items,
-each into the slot of its layer (replacing what was there); slots stack in order. Slots 1-3 use the
+each into the place its layer belongs to; places stack in order. **Eyes and pattern are one at a time, but each of the
+clothing places (tail, legs, back, neck, head) takes up to three items**, as in Burrow's client: the first is drawn in the
+place's own position, the second and third right after it, each over the one before, in the order you added them
+(`--wear A --wear B` on the command line); a fourth pushes the oldest off. (In the game itself the stacking order follows the
+order of the player's inventory, so if two items overlap differently from Burrow, take one off and put it back.) Slots 1-3 use the
 avatar's three default colours; a worn item uses its own default colour (the first of its
 `colors` list; the game uses the colour the player picked). Mixing of semi-transparent pixels,
 shading and flipping follow the game's `LayerBitmap.paintFrame`.

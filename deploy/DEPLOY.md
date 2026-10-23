@@ -101,6 +101,19 @@ $M --types avatars,clothing                 # every animal (~1M files, ~4 GB)
 The page looks at the folder as it works and refreshes its lists about once a minute, so new files appear without a restart.
 Public mode never downloads for visitors, so it offers only what is in that folder.
 
+**The "Den items" tab needs pictures, which are drawn ahead of time.** Den items are small Flash movies, and drawing them needs
+JPEXS ffdec and Java, which you do not want on the web server. Draw them on your own computer instead, then copy the pictures up:
+```bash
+# on your computer (cache with the den files, ffdec installed):
+python mirror_assets.py --types defs,den --out cache
+python extract_den_items.py --cache cache --out den-out            # ~40 minutes for all ~6,000
+# copy only the pictures and their notes (not the .swf files) to the server:
+rsync -av den-out/png den-out/meta.json YOU@SERVER:/tmp/den-out/
+ssh YOU@SERVER 'sudo mkdir -p /srv/asset-tools/den-out && sudo cp -r /tmp/den-out/* /srv/asset-tools/den-out/ && sudo chown -R assettools:assettools /srv/asset-tools/den-out'
+```
+(`scp -r` works instead of `rsync`.) The page notices new pictures on its own. Without them the tab still lists every den item with its
+price and details, just without pictures. For the GitHub Pages site, `--den` is a setting of the server, so nothing changes there.
+
 ## 4. Check it
 
 ```bash

@@ -30,7 +30,7 @@ The page can also live somewhere else (GitHub Pages: see site/build.py and deplo
 server that site's address with --cors-origin https://YOU.github.io. Browsers from that site, and only
 that site, may then call the API; browser requests from any other website are refused.
 """
-import argparse, base64, collections, importlib, importlib.util, io, json, os, secrets, shlex, subprocess, sys
+import argparse, base64, collections, importlib, importlib.util, io, json, os, re, secrets, shlex, subprocess, sys
 import threading, time, traceback, urllib.parse, webbrowser, zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -39,7 +39,7 @@ SELF = os.path.basename(__file__)
 sys.path.insert(0, HERE)
 
 STATE = {"token": "", "cache": "cache", "build": "1830", "workdir": os.getcwd(), "port": 0, "explicit": False, "saves": os.path.join(HERE, "asset-gui-saves"),
-         "public": False, "cors": [], "trust_proxy": False, "allow_download": False, "allowed_hosts": [], "max_scale": 6, "rate": 40}
+         "den": "den-out", "public": False, "cors": [], "trust_proxy": False, "allow_download": False, "allowed_hosts": [], "max_scale": 6, "rate": 40}
 LOCK = threading.RLock()
 RENDER = threading.BoundedSemaphore(8)  # how many previews / exports may be drawn at once (--max-concurrent)
 
@@ -58,7 +58,8 @@ def heavy(fn, *args):
 
 
 # public mode: the only things a visitor may ask for
-PUBLIC_GET = {"/", "/healthz", "/api/info", "/api/avatars", "/api/animations", "/api/palette", "/api/avatar-colors", "/api/items", "/api/parts"}
+PUBLIC_GET = {"/", "/healthz", "/api/info", "/api/avatars", "/api/animations", "/api/palette", "/api/avatar-colors", "/api/items", "/api/parts",
+              "/api/den", "/api/den-item", "/api/den-image"}
 PUBLIC_POST = {"/api/preview", "/api/export", "/api/look"}
 HEAVY_PATHS = {"/api/preview", "/api/export", "/api/animations"}
 _hits = {}  # (address, kind) -> request times in the last minute
@@ -71,7 +72,9 @@ def rate_limited(addr, path):
         if len(_hits) > 20000:
             for k in [k for k, v in _hits.items() if not v or now - v[-1] > 120]:
                 del _hits[k]
-        for kind, limit in (("all", STATE["rate"] * 8), ("heavy", STATE["rate"])):
+        # den pictures are small static files and a page of them is dozens of requests: their own, roomier bucket
+        kinds = (("img", STATE["rate"] * 60),) if path == "/api/den-image" else (("all", STATE["rate"] * 8), ("heavy", STATE["rate"]))
+        for kind, limit in kinds:
             if kind == "heavy" and path not in HEAVY_PATHS:
                 continue
             q = _hits.setdefault((addr, kind), collections.deque())
@@ -247,7 +250,7 @@ _preview_cache = collections.OrderedDict()
 
 def libs():
     """composite_avatar & friends, reloaded when their files change"""
-    names = ["mirror_assets", "decode_imagearray", "composite_avatar", "anim_encode"]
+    names = ["mirror_assets", "decode_imagearray", "composite_avatar", "anim_encode", "extract_den_items"]
     key = tuple(os.path.getmtime(os.path.join(HERE, n + ".py")) for n in names)
     with LOCK:
         if _mods["mtimes"] != key:
@@ -255,7 +258,7 @@ def libs():
             for n in names:
                 m = sys.modules.get(n)
                 loaded.append(importlib.reload(m) if m else importlib.import_module(n))
-            _mods.update(mtimes=key, M=loaded[0], D=loaded[1], C=loaded[2], E=loaded[3])
+            _mods.update(mtimes=key, M=loaded[0], D=loaded[1], C=loaded[2], E=loaded[3], X=loaded[4])
             _data.clear()
             _preview_cache.clear()
         return _mods
@@ -427,8 +430,8 @@ def validate_look(look):
         if cols:
             out["sl"][str(slot)] = clean_cset(cols, game)
     w = look.get("w") or []
-    if not isinstance(w, list) or len(w) > 12:
-        raise ValueError("an outfit holds at most 12 items")
+    if not isinstance(w, list) or len(w) > 15:
+        raise ValueError("an outfit holds at most 15 items (three in each of the five clothing places)")
     for it in w:
         iid = str(it.get("i") if isinstance(it, dict) else "")
         if not iid.isdigit() or len(iid) > 7:
@@ -573,6 +576,157 @@ def api_parts(avatar, cat):
     return out
 
 
+# ------------------------------------------------------------------ den items
+_den = {"stamp": None, "pics": {}, "meta": {}}
+DEN_PNG = re.compile(r"^(\d+)_c(\d+)_(.*?)(?:_f(\d+))?\.png$")
+CURRENCY = {"0": "gems", "1": "tickets", "3": "diamonds"}
+
+
+def den_pictures():
+    """({(den id, category): [png file names, one per frame]}, meta.json) of the rendered pictures in --den, re-read when the folder changes"""
+    pdir, mpath = os.path.join(STATE["den"], "png"), os.path.join(STATE["den"], "meta.json")
+    try:
+        stamp = (STATE["den"], os.stat(pdir).st_mtime, os.stat(mpath).st_mtime if os.path.exists(mpath) else 0)
+    except OSError:
+        stamp = (STATE["den"], None, None)
+    with LOCK:
+        if _den["stamp"] != stamp:
+            pics = {}
+            if stamp[1] is not None:
+                found = collections.defaultdict(dict)
+                for e in os.scandir(pdir):
+                    m = DEN_PNG.match(e.name)
+                    if m:
+                        found[(int(m.group(1)), int(m.group(2)))][int(m.group(4) or 1)] = e.name
+                pics = {k: [v[n] for n in sorted(v)] for k, v in found.items()}
+            meta = {}
+            try:
+                with open(mpath) as f:
+                    for m in json.load(f).values():
+                        meta[(int(m.get("defId", 0)), int(m.get("category", 0)))] = m
+            except (OSError, ValueError, TypeError):
+                pass
+            _den.update(stamp=stamp, pics=pics, meta=meta)
+        return _den["pics"], _den["meta"]
+
+
+def den_rows():
+    h = data()
+    if "den" not in h:
+        d, nm = h["d"], names()
+        rows = []
+        for r in d.pack(1030).values():
+            try:
+                did = int(r["id"])
+            except (KeyError, ValueError):
+                continue
+            rows.append({"id": did, "name": nm.get(r.get("nameStrId")) or r.get("abbrName") or "den item %d" % did,
+                         "abbr": r.get("abbrName") or "", "cost": int(r.get("cost") or 0), "members": r.get("membersOnly") == "1",
+                         "group": int(r.get("sortCat") or 0), "row": r})
+        rows.sort(key=lambda x: x["id"])
+        h["den"] = rows
+    return h["den"]
+
+
+def best_pic(pics, did):
+    for c in range(1, 9):
+        if (did, c) in pics:
+            return {"cat": c, "frames": len(pics[(did, c)])}
+    return None
+
+
+def api_den(q, filt, sort, page, size):
+    pics, _ = den_pictures()
+    words = [w for w in q.lower().split() if w]
+    out = []
+    for r in den_rows():
+        hay = (r["name"] + " " + r["abbr"]).lower()
+        # a bare number means that exact id (or a name with that number in it, like "2012 banner"), not every id containing it
+        if words and not all((w in hay) or (w.isdigit() and int(w) == r["id"]) for w in words):
+            continue
+        pic = best_pic(pics, r["id"])
+        if (filt == "pic" and not pic) or (filt == "nopic" and pic) or (filt == "anim" and not (pic and pic["frames"] > 1)) \
+                or (filt == "free" and r["cost"] != 0) or (filt == "members" and not r["members"]):
+            continue
+        out.append((r, pic))
+    key = {"name": lambda t: t[0]["name"].lower(), "cost": lambda t: (t[0]["cost"], t[0]["id"])}.get(sort, lambda t: t[0]["id"])
+    out.sort(key=key)
+    size = max(12, min(120, size))
+    pages = max(1, -(-len(out) // size))
+    page = max(0, min(page, pages - 1))
+    return {"total": len(out), "page": page, "pages": pages, "rendered": len({k[0] for k in pics}),
+            "items": [{"id": r["id"], "name": r["name"], "abbr": r["abbr"], "cost": r["cost"], "members": r["members"], "pic": pic}
+                      for r, pic in out[page * size:(page + 1) * size]]}
+
+
+def api_den_item(did):
+    rows = {r["id"]: r for r in den_rows()}
+    if did not in rows:
+        raise ValueError("no den item %d" % did)
+    r = rows[did]
+    pics, meta = den_pictures()
+    M, build = libs()["M"], STATE["build"]
+    row = r["row"]
+    root = os.path.join(STATE["cache"], build)
+    return {"id": did, "name": r["name"], "abbr": r["abbr"], "cost": r["cost"], "members": r["members"], "group": r["group"],
+            "currency": CURRENCY.get(str(row.get("currencyType")), "currency " + str(row.get("currencyType"))),
+            "type": row.get("typeCat"), "layer": row.get("layer"), "scale": row.get("scalePercent"), "enviro": row.get("enviroType"),
+            "special": row.get("specialType"), "status": row.get("itemStatus"),
+            "pictures": [{"cat": c, "frames": len(pics[(did, c)]), "meta": {k: meta.get((did, c), {}).get(k) for k in ("cx", "cy", "so", "r")}}
+                         for c in range(1, 9) if (did, c) in pics],
+            "inCache": [c for c in range(1, 9) if os.path.isfile(os.path.join(root, "items", M.hash_name(str(did << 16 | c))))] if not STATE["public"] else None,
+            "music": bool(r["abbr"]) and os.path.isfile(os.path.join(root, *M.hashed(build, "audio/%s.mp3" % r["abbr"]).split("/")[1:])) if not STATE["public"] else None}
+
+
+def den_image(did, cat, frame):
+    pics, _ = den_pictures()
+    files = pics.get((did, cat))
+    if not files or not 1 <= frame <= len(files):
+        return None
+    with open(os.path.join(STATE["den"], "png", files[frame - 1]), "rb") as f:  # the name came from our own folder listing, never from the request
+        return f.read()
+
+
+def den_swf(did, cat):
+    d = os.path.join(STATE["den"], "swf")
+    prefix = "%d_c%d_" % (did, cat)
+    names_ = sorted(n for n in (os.listdir(d) if os.path.isdir(d) else []) if n.startswith(prefix) and n.endswith(".swf"))
+    if not names_:
+        return None
+    with open(os.path.join(d, names_[0]), "rb") as f:
+        return f.read(), names_[0]
+
+
+DEN_RENDER_LOCK = threading.Lock()
+
+
+def den_render(did):
+    """private mode: fetch a den item's files (as the GIF maker does for avatars), unwrap them and draw them with ffdec"""
+    if STATE["public"]:
+        raise ValueError("not available here")
+    rows = {r["id"]: r for r in den_rows()}
+    if did not in rows:
+        raise ValueError("no den item %d" % did)
+    L = libs()
+    keys = {"%s/items/%s" % (STATE["build"], L["M"].hash_name(str(did << 16 | c))): c for c in range(1, 9)}
+    fetch_keys(keys)
+    from types import SimpleNamespace
+    ns = SimpleNamespace(cache=STATE["cache"], build=STATE["build"], out=STATE["den"], item=[did], ffdec=None, jobs=1,
+                         no_render=False, no_crop=False, limit=0)
+    with DEN_RENDER_LOCK:
+        try:
+            r = L["X"].run(ns)
+        except SystemExit as e:
+            raise ValueError(str(e.code))
+    if not r["swf"]:
+        raise ValueError("the game has no picture file for this den item")
+    if not r["ffdec"]:
+        raise ValueError("ffdec (JPEXS) was not found, so the picture could not be drawn. Install it and Java, or run extract_den_items.py with --ffdec; the .swf was saved.")
+    if not r["png"]:
+        raise ValueError("ffdec ran but produced no picture")
+    return {"ok": True, "frames": r["png"]}
+
+
 def look_args(p):
     """request -> (avatar, category, wear specs, overrides, hflip, scale, bg)"""
     wear = []
@@ -712,7 +866,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
+        if "Cache-Control" not in (extra or {}):
+            self.send_header("Cache-Control", "no-store")
         o = self.headers.get("Origin")
         if STATE["public"] and o and o in STATE["cors"]:
             self.send_header("Access-Control-Allow-Origin", o)
@@ -796,6 +951,20 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, json.dumps([hexof(((c >> 16) & 255, (c >> 8) & 255, c & 255)) for c in g]))
             if url.path == "/api/avatar-colors":
                 return self.send(200, json.dumps(api_avatar_colors(int(q["avatar"]))))
+            if url.path == "/api/den":
+                return self.send(200, json.dumps(api_den(q.get("q", ""), q.get("filter", "all"), q.get("sort", "id"), int(q.get("page", 0)), int(q.get("size", 60)))))
+            if url.path == "/api/den-item":
+                return self.send(200, json.dumps(api_den_item(int(q["id"]))))
+            if url.path == "/api/den-image":
+                png = den_image(int(q["id"]), int(q.get("cat", 1)), int(q.get("frame", 1)))
+                if png is None:
+                    return self.send(404, json.dumps({"error": "no such picture"}))
+                return self.send(200, png, "image/png", {"Cache-Control": "public, max-age=600"})
+            if url.path == "/api/den-swf":  # private mode only: not in PUBLIC_GET
+                got = den_swf(int(q["id"]), int(q.get("cat", 1)))
+                if got is None:
+                    return self.send(404, json.dumps({"error": "no such file"}))
+                return self.send(200, got[0], "application/x-shockwave-flash", {"Content-Disposition": 'attachment; filename="%s"' % got[1]})
             if url.path == "/api/parts":
                 cat = int(q["cat"]) if q.get("cat", "") != "" else None
                 return self.send(200, json.dumps(api_parts(int(q["avatar"]), cat)))
@@ -834,6 +1003,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, json.dumps(change_saves(body.get("op"), body.get("kind"), body.get("name"), body.get("data"))))
             if url.path == "/api/look":
                 return self.send(200, json.dumps(resolve_look(body.get("look"))))
+            if url.path == "/api/den-render":  # private mode only: not in PUBLIC_POST
+                return self.send(200, json.dumps(den_render(int(body.get("id")))))
             if url.path == "/api/stop":
                 job = JOBS.get(body.get("job"))
                 if job and not job.done:
@@ -857,6 +1028,7 @@ def make_parser():
     ap.add_argument("--workdir", default=os.getcwd(), help="folder the scripts run in (default: where you started this)")
     ap.add_argument("--saves", default=os.path.join(HERE, "asset-gui-saves"),
                     help="folder for saved colours and outfits (default: asset-gui-saves next to this script)")
+    ap.add_argument("--den", default="den-out", help="folder with the rendered den item pictures made by extract_den_items.py (default ./den-out)")
     ap.add_argument("--no-browser", action="store_true", help="do not open the page automatically")
     ap.add_argument("--public", action="store_true", help="internet-facing mode: GIF maker only, rate limits, no downloads, no saves on the server (see deploy/DEPLOY.md)")
     ap.add_argument("--host", default="127.0.0.1", help="address to listen on (default 127.0.0.1; with --public put a reverse proxy in front)")
@@ -877,7 +1049,7 @@ def main():
         print(json.dumps(dump_schema()))
         return
     STATE.update(token=secrets.token_urlsafe(18), cache=os.path.abspath(os.path.expanduser(a.cache)), build=a.build,
-                 workdir=os.path.abspath(a.workdir), saves=os.path.abspath(os.path.expanduser(a.saves)), explicit="--cache" in sys.argv[1:] or any(x.startswith("--cache=") for x in sys.argv[1:]))
+                 workdir=os.path.abspath(a.workdir), den=os.path.abspath(os.path.expanduser(a.den)), saves=os.path.abspath(os.path.expanduser(a.saves)), explicit="--cache" in sys.argv[1:] or any(x.startswith("--cache=") for x in sys.argv[1:]))
     global RENDER
     if a.public:
         STATE.update(public=True, token="", trust_proxy=a.trust_proxy, allow_download=a.allow_download,
@@ -1001,6 +1173,24 @@ details.sect>.sbody{padding:0 10px 8px}
 .pal i{width:auto;height:auto;aspect-ratio:1}
 .list{max-height:180px}
 textarea.code{min-height:48px}
+/* den items */
+.den{display:grid;grid-template-columns:minmax(0,1fr) minmax(280px,360px);gap:10px;align-items:start}
+.dgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(92px,1fr));gap:6px;margin-bottom:8px}
+.dcell{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;padding:4px;min-height:96px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--ink);cursor:pointer;font:inherit;min-width:0}
+.dcell.on,.dcell:hover{border-color:var(--acc)}
+.dcell img{max-width:100%;max-height:64px;object-fit:contain}
+.dcell span{font-size:11px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.noimg{color:var(--mute);font-size:11px;text-align:center;padding:14px 2px}.noimg.big{padding:60px 8px;font-size:13px}
+.ddetail{position:sticky;top:8px;max-height:calc(100vh - 20px);overflow:auto}
+.dview{display:flex;align-items:center;justify-content:center;min-height:140px;margin:8px 0;border:1px solid var(--line);border-radius:8px;padding:6px;background-image:linear-gradient(45deg,#8883 25%,transparent 25%,transparent 75%,#8883 75%),linear-gradient(45deg,#8883 25%,transparent 25%,transparent 75%,#8883 75%);background-size:20px 20px;background-position:0 0,10px 10px}
+.dview img{max-width:100%;max-height:300px;object-fit:contain}
+.dmeta{margin:6px 0}.drow{display:flex;justify-content:space-between;gap:10px;padding:2px 0;border-bottom:1px solid var(--line);font-size:12.5px}.drow .k{color:var(--mute)}
+a.btn{display:inline-block;text-decoration:none;color:var(--ink);padding:4px 9px;border:1px solid var(--line);border-radius:7px;background:var(--panel)}
+@media (max-width:760px){
+  .den{grid-template-columns:1fr}
+  .ddetail{position:fixed;left:0;right:0;bottom:0;top:auto;z-index:15;max-height:75vh;border-radius:14px 14px 0 0;margin:0;padding:10px 12px calc(12px + env(safe-area-inset-bottom,0px));box-shadow:0 -8px 30px #0005}
+  .dgrid{grid-template-columns:repeat(auto-fill,minmax(84px,1fr))}
+}
 @media (max-width:760px){
   main{padding:8px 10px}
   .gif{grid-template-columns:1fr}
@@ -1105,6 +1295,7 @@ function scriptTab(sc){
 /* ---------- GIF maker ---------- */
 /* collapsible sections, open/closed state remembered in this browser */
 const OPEN=store.get('open',{});
+const SLOTNAME={4:'tail',5:'legs',6:'back',7:'neck',8:'head'};
 const narrow=()=>!!(window.matchMedia&&window.matchMedia('(max-width:760px)').matches);
 function sect(key,title,openDefault,...kids){const d=el('details',{class:'card sect'},el('summary',{text:title}),el('div',{class:'sbody'},...kids));
   d.open=key in OPEN?!!OPEN[key]:openDefault;d.addEventListener('toggle',()=>{OPEN[key]=d.open;store.set('open',OPEN)});return d}
@@ -1239,11 +1430,14 @@ function gifTab(){
     if(!r.items.length)res.append(el('div',{class:'it mute',text:'No matches.'}));
     for(const it of r.items){const have=S.wear.some(w=>w.id===it.id);res.append(el('div',{class:'it'},el('span',{class:'nm',text:it.name,title:it.name}),el('span',{class:'tag',text:'#'+it.id}),
       !it.fits?el('span',{class:'tag',text:'not for this avatar'}):it.has===false?el('span',{class:'tag',text:S.auto!==false?'downloads when added':'not downloaded'}):null,
-      el('button',{class:'btn',text:have?'added':'add',disabled:have||!it.fits,onclick:()=>{S.wear=S.wear.filter(w=>w.slot!==it.slot);S.wear.push({id:it.id,name:it.name,slot:it.slot,def:norm(it.colors),colors:null});save();drawWorn();search();preview()}})))}
+      el('button',{class:'btn',text:have?'added':'add',disabled:have||!it.fits,onclick:()=>{const same=S.wear.filter(w=>w.slot===it.slot);let off=null;   // up to three per place, as in Burrow's client; a 4th pushes the oldest off
+          if(same.length>=3){off=same[0];S.wear=S.wear.filter(w=>w!==off)}
+          S.wear.push({id:it.id,name:it.name,slot:it.slot,def:norm(it.colors),colors:null});save();drawWorn();search();preview();
+          if(off)flash('Up to 3 items per place: '+off.name+' came off to make room.')}})))}
     if(r.total>r.items.length)res.append(el('div',{class:'it mute',text:r.total-r.items.length+' more — narrow the search'}))}catch(e){res.hidden=false;res.textContent=String(e)}}
   q.oninput=debounce(search,250);
-  function drawWorn(){worn.replaceChildren();drawParts();const clothes=S.wear.filter(w=>w.slot>3);if(!clothes.length){worn.append(el('div',{class:'mute',text:'Nothing added. One item per slot; a new one replaces the old.',style:'margin-top:6px'}));return}
-    for(const w of clothes){worn.append(colorRow('item'+w.id,el('span',{style:'display:inline-flex;gap:6px;align-items:center;flex:1;min-width:130px'},el('b',{text:w.name}),el('span',{class:'tag',text:'slot '+w.slot})),w.colors||w.def,n=>{w.colors=n;save();drawWorn();previewD()},
+  function drawWorn(){worn.replaceChildren();drawParts();const clothes=S.wear.filter(w=>w.slot>3);if(!clothes.length){worn.append(el('div',{class:'mute',text:'Nothing added. Up to 3 items per place (head, neck, back, legs, tail); a 4th pushes the oldest off. Later ones are drawn over earlier ones.',style:'margin-top:6px'}));return}
+    for(const w of clothes){worn.append(colorRow('item'+w.id,el('span',{style:'display:inline-flex;gap:6px;align-items:center;flex:1;min-width:130px'},el('b',{text:w.name}),el('span',{class:'tag',text:SLOTNAME[w.slot]||'slot '+w.slot})),w.colors||w.def,n=>{w.colors=n;save();drawWorn();previewD()},
       [w.colors?el('button',{class:'btn',text:'reset',onclick:()=>{w.colors=null;save();drawWorn();previewD()}}):null,el('button',{class:'btn',text:'remove',onclick:()=>{S.wear=S.wear.filter(x=>x!==w);save();drawWorn();search();previewD()}})]))}}
   itemBody.append(q,res,worn);
 
@@ -1309,13 +1503,69 @@ function gifTab(){
   init();window.gifReload=init;
   return root}
 
+/* ---------- den items: browse the game's den items and see their pictures ---------- */
+function denTab(){
+  const root=el('div',{class:'den'});
+  const q=el('input',{type:'text',placeholder:'search den items: a name or an id (piano, 617 ...)',spellcheck:'false'});
+  const mk=(pairs)=>pairs.map(([v,t])=>el('option',{value:v,text:t}));
+  const filt=el('select',{},...mk([['all','all items'],['pic','with a picture'],['nopic','without a picture'],['anim','animated'],['free','free'],['members','members only']]));
+  const sort=el('select',{},...mk([['id','by id'],['name','by name'],['cost','by price']]));
+  const grid=el('div',{class:'dgrid'}),pager=el('div',{class:'bar dpager'}),status=el('div',{class:'mute'});
+  const detail=el('div',{class:'card ddetail',hidden:true});
+  let page=0,selId=null,anim=null;
+  const pic=(id,cat,frame)=>API+'/api/den-image?id='+id+'&cat='+cat+'&frame='+frame+(TOKEN?'&t='+encodeURIComponent(TOKEN):'');
+  const price=it=>it.cost===0?'free':it.cost.toLocaleString()+' '+(it.currency||'gems');
+
+  async function load(){status.textContent='loading…';
+    try{const r=await getJ('/api/den?q='+encodeURIComponent(q.value)+'&filter='+filt.value+'&sort='+sort.value+'&page='+page+'&size=60');page=r.page;
+      grid.replaceChildren(...r.items.map(it=>el('button',{class:'dcell'+(it.id===selId?' on':''),title:it.name+' (#'+it.id+')',onclick:()=>open(it.id)},
+        it.pic?el('img',{src:pic(it.id,it.pic.cat,1),loading:'lazy',alt:it.name}):el('div',{class:'noimg',text:'no picture'}),el('span',{text:it.name}))));
+      status.textContent=r.total.toLocaleString()+' den item'+(r.total===1?'':'s')+(r.total?' · page '+(r.page+1)+' of '+r.pages:'')+(r.rendered?' · '+r.rendered+' with pictures':' · no pictures rendered yet');
+      pager.replaceChildren(el('button',{class:'btn',text:'‹ previous',disabled:r.page===0,onclick:()=>{page--;load();grid.scrollIntoView&&grid.scrollIntoView()}}),
+        el('button',{class:'btn',text:'next ›',disabled:r.page>=r.pages-1,onclick:()=>{page++;load();grid.scrollIntoView&&grid.scrollIntoView()}}));
+      if(!r.items.length)grid.append(el('div',{class:'mute',text:'No den items match.'}))}
+    catch(e){status.textContent='';grid.replaceChildren(el('div',{class:'err',text:String(e.message||e)}))}}
+
+  function stop(){if(anim){clearInterval(anim);anim=null}}
+  async function open(id){selId=id;stop();detail.hidden=false;detail.replaceChildren(el('div',{class:'mute',text:'loading…'}));
+    document.querySelectorAll('.dcell.on').forEach(c=>c.classList.remove('on'));
+    try{const d=await getJ('/api/den-item?id='+id);let cur=d.pictures.length?d.pictures[0]:null;
+      const view=el('div',{class:'dview'}),catRow=el('div',{class:'bar',style:'margin:4px 0'}),msg=el('div',{class:'mute'});
+      const show=pc=>{cur=pc;stop();view.replaceChildren();
+        if(!pc){view.append(el('div',{class:'noimg big',text:'no picture rendered yet'}));return}
+        const imgs=[];for(let f=1;f<=pc.frames;f++)imgs.push(el('img',{src:pic(d.id,pc.cat,f),alt:d.name}));
+        const one=imgs[0];view.append(one);
+        if(imgs.length>1){let i=0;anim=setInterval(()=>{i=(i+1)%imgs.length;one.src=imgs[i].src},90)}}
+      detail.replaceChildren(...[
+        el('div',{class:'bar',style:'margin:0;justify-content:space-between'},el('b',{text:d.name}),el('button',{class:'btn',text:'close',onclick:()=>{stop();detail.hidden=true;selId=null}})),
+        view,
+        d.pictures.length>1?(catRow.append(...d.pictures.map(pc=>el('button',{class:'btn',text:'view '+pc.cat,onclick:()=>show(pc)}))),catRow):null,
+        el('div',{class:'dmeta'},...[['id','#'+d.id],['art name',d.abbr||'—'],['price',price(d)],['members',d.members?'yes':'no'],['group',d.group],['type',d.type],['layer',d.layer],['scale',d.scale?d.scale+'%':'—'],['environment',d.enviro],
+          ['frames',d.pictures.length?d.pictures.map(p=>'view '+p.cat+': '+p.frames).join(', '):'—'],
+          ['placement (cx, cy, so, r)',cur&&cur.meta&&cur.meta.cx!==null?[cur.meta.cx,cur.meta.cy,cur.meta.so,cur.meta.r].join(', '):'—'],
+          ...(window.PUBLIC?[]:[['in your cache',d.inCache&&d.inCache.length?'views '+d.inCache.join(', '):'not downloaded'],['music file',d.music?'yes':'no']])].map(([k,v])=>el('div',{class:'drow'},el('span',{class:'k',text:k}),el('span',{text:String(v)})))),
+        el('div',{class:'bar'},el('button',{class:'btn',text:'copy id',onclick:async()=>{try{await navigator.clipboard.writeText(String(d.id));msg.textContent='Copied '+d.id}catch(e){msg.textContent=String(d.id)}}}),
+          ...(window.PUBLIC?[]:[
+            d.pictures.length?el('a',{class:'btn',href:API+'/api/den-swf?id='+d.id+'&cat='+(cur?cur.cat:1)+(TOKEN?'&t='+encodeURIComponent(TOKEN):''),text:'download .swf',download:''}):null,
+            el('button',{class:'btn'+(d.pictures.length?'':' pri'),text:d.pictures.length?'draw again':'draw it now',title:'download the item\'s files if needed and draw them (needs ffdec and Java)',onclick:async e=>{e.target.disabled=true;msg.textContent='drawing… (downloads the files if needed; a few seconds)';
+              try{await postJ('/api/den-render',{id:d.id});await open(d.id);load()}catch(er){msg.className='err';msg.textContent=String(er.message||er);e.target.disabled=false}}})])),
+        msg,
+        d.pictures.length||window.PUBLIC?null:el('div',{class:'mute',text:'Or from a terminal: python extract_den_items.py --item '+d.id})].filter(Boolean));   // the browser's replaceChildren would print a null as the word "null"
+      show(cur);if(narrow()&&detail.scrollIntoView)detail.scrollIntoView({block:'nearest'})}
+    catch(e){detail.replaceChildren(el('div',{class:'err',text:String(e.message||e)}),el('button',{class:'btn',text:'close',onclick:()=>{detail.hidden=true}}))}}
+
+  const reload=debounce(()=>{page=0;load()},250);q.oninput=reload;filt.onchange=sort.onchange=()=>{page=0;load()};
+  root.append(el('div',{class:'dleft'},el('div',{class:'card'},q,el('div',{class:'row2',style:'margin-top:6px;margin-bottom:0'},el('div',{class:'field'},filt),el('div',{class:'field'},sort)),status),grid,pager),detail);
+  load();return root}
+
 /* ---------- start ---------- */
 (async()=>{
   try{const i=await getJ('/api/info');window.PUBLIC=!!i.public;window.PUBLIC_DL=!!i.download;
-    if(i.public){$('#info').textContent='Pillow: '+(i.pillow?'yes':'no (built-in GIF encoder)');$('.cfg').style.display='none';tabsEl.style.display='none'}
+    if(i.public){$('#info').textContent='Pillow: '+(i.pillow?'yes':'no (built-in GIF encoder)');$('.cfg').style.display='none'}
     else{$('#info').textContent='scripts run in: '+i.workdir+' · Pillow: '+(i.pillow?'yes':'no (built-in GIF encoder)')+' · Python '+i.python;applyConf(i);
       const saved=store.get('conf',null);if(!i.explicit&&saved&&(saved.cache!==i.cache||saved.build!==i.build)){$('#cfgCache').value=saved.cache;$('#cfgBuild').value=saved.build;await useConf(true)}}}catch(e){$('#info').textContent=window.PUBLIC?'Could not reach the server'+(API?' at '+API:'')+': '+String(e.message||e):String(e);if(window.PUBLIC){$('.cfg').style.display='none';tabsEl.style.display='none'}}
   addTab('gif','GIF maker',gifTab());
+  addTab('den','Den items',denTab());
   if(!window.PUBLIC){try{const sc=await getJ('/api/schema');for(const s of sc.scripts)addTab(s.name,s.name,scriptTab(s))}catch(e){addTab('err','Scripts',el('div',{class:'card err',text:String(e.message||e)}))}}
   const want=store.get('tab','gif');show(sections[want]?want:'gif');
 })();
