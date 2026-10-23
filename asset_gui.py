@@ -961,6 +961,60 @@ input.bad{border-color:var(--bad)!important}textarea.code{font:12px ui-monospace
 .stage{background-image:linear-gradient(45deg,#8883 25%,transparent 25%,transparent 75%,#8883 75%),linear-gradient(45deg,#8883 25%,transparent 25%,transparent 75%,#8883 75%);background-size:20px 20px;background-position:0 0,10px 10px;border:1px solid var(--line);border-radius:10px;min-height:240px;display:flex;align-items:center;justify-content:center;padding:10px;overflow:auto}
 .stage canvas{max-width:100%;height:auto}
 .bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:10px}
+
+/* ---- compact layout, and small screens ---- */
+[hidden]{display:none!important}
+body{font-size:13px}
+header{padding:6px 12px;gap:4px 10px}
+nav{padding:6px 12px 0;flex-wrap:nowrap;overflow-x:auto}
+nav button{white-space:nowrap;padding:5px 10px}
+main{padding:10px 12px}
+.card{padding:8px 10px;margin-bottom:8px;border-radius:8px}
+label{margin:0 0 2px;font-size:12px}
+input[type=text],input[type=number],select,textarea{padding:4px 6px}
+button.btn{padding:4px 9px}
+.row{grid-template-columns:repeat(auto-fill,minmax(min(100%,150px),1fr));gap:6px 10px}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:6px 8px;margin-bottom:6px}
+.row2 .field,.row .field{min-width:0}
+.opts{display:flex;flex-wrap:wrap;gap:2px 14px;margin:2px 0 4px}
+details.sect{padding:0}
+details.sect>summary{cursor:pointer;font-weight:600;padding:7px 10px;list-style:none;display:flex;align-items:center;gap:6px;user-select:none}
+details.sect>summary::-webkit-details-marker{display:none}
+details.sect>summary::before{content:'\25B8';color:var(--mute);display:inline-block;width:10px;transition:transform .12s}
+details.sect[open]>summary::before{transform:rotate(90deg)}
+details.sect>.sbody{padding:0 10px 8px}
+.toolbar{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px}
+.toolbar .btn{padding:3px 8px;font-size:12px}
+.gif{grid-template-columns:minmax(290px,370px) 1fr;gap:10px;align-items:start}
+.gif>.right{position:sticky;top:8px}
+.preview .stage{min-height:200px;padding:6px}
+.preview .bar{margin-top:6px}
+.exportbar{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:8px}
+.exportbar>select{width:auto;flex:1 1 110px;min-width:0}
+.exportbar #pillfield{flex:1 1 130px;min-width:0}
+.exportbar #pillfield select{width:100%}
+.swrow{gap:4px;margin:3px 0}
+.swrow span.n{width:52px}
+.sw{width:24px;height:24px}
+.pop{width:min(330px,calc(100vw - 16px))}
+.pal{grid-template-columns:repeat(16,1fr);gap:2px}
+.pal i{width:auto;height:auto;aspect-ratio:1}
+.list{max-height:180px}
+textarea.code{min-height:48px}
+@media (max-width:760px){
+  main{padding:8px 10px}
+  .gif{grid-template-columns:1fr}
+  .gif>.right{order:-1;top:0;z-index:5;margin:0 -10px;padding:0 10px;background:var(--bg)}   /* the picture stays in view while you change things */
+  .preview .stage{min-height:110px;max-height:36vh;padding:2px}
+  .stage canvas{max-height:33vh;width:auto;max-width:100%}
+  input[type=text],input[type=number],select,textarea{font-size:16px}   /* stops phones zooming into a field you tap */
+  button.btn,select,input[type=text],input[type=number]{min-height:38px}
+  .sw{width:32px;height:32px}
+  .swrow span.n{width:46px}
+  .pop{position:fixed;left:0!important;right:0;bottom:0;top:auto!important;width:auto;max-height:70vh;overflow:auto;border-radius:14px 14px 0 0;padding:12px 12px calc(12px + env(safe-area-inset-bottom,0px))}
+  .row{grid-template-columns:1fr 1fr}
+  .list div.it{flex-wrap:wrap}
+}
 </style></head><body>
 <header><h1>Asset tools</h1>
 <div class="cfg"><label for="cfgCache">Cache folder</label><input type="text" id="cfgCache" placeholder="e.g. cache or D:\downloads" spellcheck="false">
@@ -1049,35 +1103,46 @@ function scriptTab(sc){
   root.append(el('div',{class:'card'},form,cmd,el('div',{class:'bar'},run,stop,status),out));upd();return root}
 
 /* ---------- GIF maker ---------- */
+/* collapsible sections, open/closed state remembered in this browser */
+const OPEN=store.get('open',{});
+const narrow=()=>!!(window.matchMedia&&window.matchMedia('(max-width:760px)').matches);
+function sect(key,title,openDefault,...kids){const d=el('details',{class:'card sect'},el('summary',{text:title}),el('div',{class:'sbody'},...kids));
+  d.open=key in OPEN?!!OPEN[key]:openDefault;d.addEventListener('toggle',()=>{OPEN[key]=d.open;store.set('open',OPEN)});return d}
+
 function gifTab(){
   const S=store.get('gif',{avatar:null,cat:null,hflip:false,scale:2,delay:80,loop:true,bgMode:'transparent',bg:'#ffffff',format:'gif',slots:{},wear:[]});
   const save=()=>{store.set('gif',S);track()};let defaults={},palette=[],anims=[],frames=[],cur=0,timer=null,ctl=null,seq=0;
-  const root=el('div',{class:'gif'});const left=el('div'),right=el('div');root.append(left,right);
+  const root=el('div',{class:'gif'});const left=el('div',{class:'left'}),right=el('div',{class:'right'});root.append(left,right);
   const avSel=el('select'),animSel=el('select'),msg=el('div',{class:'mute'}),note=el('div',{class:'mute'});
   const keepChk=el('input',{type:'checkbox'}),autoChk=el('input',{type:'checkbox'}),flip=el('input',{type:'checkbox'}),scaleSel=el('select',{},[1,2,3,4].map(n=>el('option',{value:n,text:n+'×'+(n===2?' (game size)':'')})));
   const delay=el('input',{type:'number',min:20,max:2000,step:10}),loop=el('input',{type:'checkbox'});
   const bgSel=el('select',{},el('option',{value:'transparent',text:'transparent'}),el('option',{value:'color',text:'solid colour'})),bgCol=el('input',{type:'color'});
   const fmt=el('select',{},el('option',{value:'gif',text:'GIF'}),el('option',{value:'apng',text:'APNG (full quality)'}),el('option',{value:'zip',text:'PNG frames (zip)'}));
-  const pill=el('select',{},el('option',{value:'auto',text:'GIF encoder: auto'}),el('option',{value:'off',text:'GIF encoder: built-in only'}));
-  left.append(el('div',{class:'card'},el('h2',{text:'1 · Avatar and animation'}),el('label',{text:'Avatar'}),avSel,el('label',{text:'Animation',style:'margin-top:8px'}),animSel,
-    el('div',{class:'bar'},el('label',{class:'chk',style:'font-weight:400;margin:0'},flip,'face the other way'),el('label',{class:'chk',style:'font-weight:400;margin:0',title:'Files that are not on this computer yet are fetched from the game CDN when you pick them.'},autoChk,'download missing files automatically'),el('label',{class:'chk',style:'font-weight:400;margin:0',title:'When you pick another avatar, keep the clothing you added and the colours you changed (items the new avatar cannot wear are left out).'},keepChk,'keep clothes and colours when changing avatar')),msg,note));
-  const colCard=el('div',{class:'card'});left.append(colCard);
-  const itemCard=el('div',{class:'card'});left.append(itemCard);
-  /* pattern and eyes: items of type 0 in layer slots 2 and 3 that this avatar can use */
+  const pill=el('select',{},el('option',{value:'auto',text:'encoder: auto'}),el('option',{value:'off',text:'encoder: built-in'}));
   let parts={eyes:[],pattern:[]};const patSel=el('select'),eyesSel=el('select');
-  const partsCard=el('div',{class:'card'},el('h2',{text:'Pattern and eyes'}),el('div',{class:'row'},el('div',{class:'field'},el('label',{text:'Pattern'}),patSel),el('div',{class:'field'},el('label',{text:'Eyes'}),eyesSel)));
-  left.insertBefore(partsCard,colCard);
+  const field=(label,ctl)=>el('div',{class:'field'},el('label',{text:label}),ctl);
+  const opt=(ctl,text,title)=>el('label',{class:'chk',style:'font-weight:400;margin:0',title},ctl,text);
+  left.append(sect('look','Avatar',true,
+    el('div',{class:'row2'},field('Avatar',avSel),field('Animation',animSel)),
+    el('div',{class:'row2'},field('Pattern',patSel),field('Eyes',eyesSel)),
+    el('div',{class:'opts'},opt(flip,'face the other way'),
+      opt(autoChk,'download missing files automatically','Files that are not on this computer yet are fetched from the game CDN when you pick them.'),
+      opt(keepChk,'keep clothes and colours when changing avatar','When you pick another avatar, keep the clothing you added and the colours you changed (items the new avatar cannot wear are left out).')),
+    msg,note));
+  const colBody=el('div'),colCard=sect('colours','Colours',true,colBody);left.append(colCard);
+  const itemBody=el('div'),itemCard=sect('clothing','Clothing',true,itemBody);left.append(itemCard);
+  /* pattern and eyes: items of type 0 in layer slots 2 and 3 that this avatar can use */
   async function loadParts(){if(S.avatar==null)return;try{parts=await getJ('/api/parts?avatar='+S.avatar+'&cat='+(S.cat??''))}catch(e){return}drawParts()}
   function drawParts(){for(const[kind,sel,slot]of[['pattern',patSel,2],['eyes',eyesSel,3]]){const have=S.wear.find(w=>w.slot===slot),def=parts[kind].find(p=>p.default);
       sel.replaceChildren(el('option',{value:'',text:'(default'+(def?': '+def.name:'')+')'}),...parts[kind].filter(p=>!p.default).map(p=>el('option',{value:p.id,text:p.name+(p.has===false&&S.auto!==false?' (downloads)':'')})));
       sel.value=have?have.id:'';if(sel.value!==(have?have.id:''))sel.value=''}}
   for(const[kind,sel,slot]of[['pattern',patSel,2],['eyes',eyesSel,3]])sel.onchange=()=>{S.wear=S.wear.filter(w=>w.slot!==slot);
     if(sel.value){const p=parts[kind].find(x=>x.id===sel.value);if(p)S.wear.push({id:p.id,name:p.name,slot,def:null,colors:null})}save();drawWorn();previewD()};
-  const outCard=el('div',{class:'card'},el('h2',{text:'4 · Look of the animation'}),el('div',{class:'row'},
-    el('div',{class:'field'},el('label',{text:'Size'}),scaleSel),el('div',{class:'field'},el('label',{text:'Frame time (ms)'}),delay),
-    el('div',{class:'field'},el('label',{text:'Background'}),bgSel,bgCol),el('div',{class:'field'},el('label',{class:'chk',style:'font-weight:400'},loop,'loop forever'))));
+  const outCard=sect('format','Size, speed and background',!narrow(),el('div',{class:'row'},
+    field('Size',scaleSel),field('Frame time (ms)',delay),
+    el('div',{class:'field'},el('label',{text:'Background'}),bgSel,bgCol),el('div',{class:'field'},el('label',{class:'chk',style:'font-weight:400;margin-top:18px'},loop,'loop forever'))));
   left.append(outCard);
-  const shareCard=el('div',{class:'card'});left.append(shareCard);
+  const shareBody=el('div'),shareCard=sect('share','Save and share',false,shareBody);left.append(shareCard);
   const codeBox=el('textarea',{class:'code',readonly:true,spellcheck:'false',title:'copy this to share the whole look'}),loadBox=el('textarea',{class:'code',placeholder:'paste a share code here',spellcheck:'false'});
   const outName=el('input',{type:'text',placeholder:'name for this outfit',size:16}),outList=el('div',{class:'list',hidden:true});
   const lookNow=()=>({v:2,a:S.avatar,c:S.cat,f:S.hflip?1:0,s:S.scale,d:+delay.value||80,l:S.loop?1:0,b:S.bgMode==='color'?S.bg.slice(1):null,sl:Object.fromEntries(Object.entries(S.slots).map(([k,c])=>[k,wire(c)])),w:S.wear.map(w=>({i:w.id,c:w.colors?wire(w.colors):null})),g:fmt.value});
@@ -1097,7 +1162,7 @@ function gifTab(){
     for(const n of names){outList.append(el('div',{class:'it'},el('span',{class:'nm',text:n,title:n}),
       el('button',{class:'btn',text:'load',onclick:async()=>{try{await applyLook(SAVES.outfits[n]);flash('Loaded "'+n+'".')}catch(e){flash(String(e.message||e),true)}}}),
       el('button',{class:'btn',text:'delete',onclick:async()=>{try{SAVES=await savesPost({op:'delete',kind:'outfits',name:n});drawOutfits();drawColors();drawWorn()}catch(e){flash(String(e.message||e),true)}}})))}}
-  shareCard.append(el('h2',{text:'5 · Save and share'}),
+  shareBody.append(
     el('label',{text:'Share code (copy this to send the whole look to someone)'}),codeBox,
     el('div',{class:'bar'},el('button',{class:'btn',text:'copy code',onclick:async()=>{refreshCode();try{await navigator.clipboard.writeText(codeBox.value);flash('Copied.')}catch(e){codeBox.select();document.execCommand('copy');flash('Copied.')}}})),
     el('label',{text:'Load a look from a code',style:'margin-top:10px'}),loadBox,
@@ -1121,9 +1186,10 @@ function gifTab(){
   const rgbNums=c=>c.h.map(h=>parseInt(h,16));
   const nearest=hex=>{const r=parseInt(hex.substr(0,2),16),g=parseInt(hex.substr(2,2),16),b=parseInt(hex.substr(4,2),16);let best=0,bd=1e9;
     palette.forEach((p,k)=>{if(k===253)return;const d=(r-parseInt(p.substr(0,2),16))**2+(g-parseInt(p.substr(2,2),16))**2+(b-parseInt(p.substr(4,2),16))**2;if(d<bd){bd=d;best=k}});return best};
-  function pick(anchor,onPick){closePop();const r=anchor.getBoundingClientRect();pop=el('div',{class:'pop'});pop.style.left=(window.scrollX+r.left)+'px';pop.style.top=(window.scrollY+r.bottom+6)+'px';
-    pop.append(el('div',{class:'mute',text:'Game palette (hover for the number)',style:'margin-bottom:6px'}),el('div',{class:'pal'},palette.map((h,k)=>el('i',{style:'background:#'+h,title:'#'+k+' · '+h,onclick:()=>{onPick({idx:k});closePop()}}))));
-    const ci=el('input',{type:'color',oninput:e=>{onPick({hex:e.target.value.slice(1)})}});pop.append(el('div',{class:'bar',style:'margin:0'},el('span',{class:'mute',text:'or a custom RGB colour:'}),ci));document.body.append(pop)}
+  function pick(anchor,onPick){closePop();const r=anchor.getBoundingClientRect();pop=el('div',{class:'pop'});
+    pop.append(el('div',{class:'mute',text:'Game palette: tap a colour (hover shows its number)',style:'margin-bottom:6px'}),el('div',{class:'pal'},palette.map((h,k)=>el('i',{style:'background:#'+h,title:'#'+k+' · '+h,onclick:()=>{onPick({idx:k});closePop()}}))));
+    const ci=el('input',{type:'color',oninput:e=>{onPick({hex:e.target.value.slice(1)})}});pop.append(el('div',{class:'bar',style:'margin:0'},el('span',{class:'mute',text:'or a custom RGB colour:'}),ci));document.body.append(pop);
+    if(!narrow()){const vw=document.documentElement.clientWidth,pw=pop.offsetWidth;pop.style.left=Math.max(8,Math.min(window.scrollX+r.left,window.scrollX+vw-pw-8))+'px';pop.style.top=(window.scrollY+r.bottom+6)+'px'}}
   const swatches=(c,onSet)=>el('span',{style:'display:inline-flex;gap:5px'},c.h.map((h,k)=>{const b=el('button',{class:'sw',style:'background:#'+h,title:(c.i?'palette #'+c.i[k]:'custom')+' · #'+h});
     b.onclick=()=>pick(b,ch=>{const h2=[...c.h];
       if(ch.idx!==undefined){if(k===0&&ch.idx===253){flash("Palette colour 253 in the first slot would be read as one of Burrow's custom-colour ids. Pick another.",true);return}
@@ -1162,11 +1228,11 @@ function gifTab(){
       el('div',{class:'bar',style:'margin:2px 0 6px'},el('span',{class:'mute',text:'hex codes'}),codes),
       el('div',{class:'bar',style:'margin:2px 0'},saved,nm,el('button',{class:'btn',text:'save these',onclick:()=>saveColors(nm.value,c)})));
     return el('div',{},el('div',{class:'swrow',style:'flex-wrap:wrap'},lead,swatches(c,onSet),extras,toggle),panel)}
-  function drawColors(){colCard.replaceChildren(el('h2',{text:'2 · Colours'}));
+  function drawColors(){colBody.replaceChildren();
     for(const[s,label]of[['1','Body'],['2','Pattern'],['3','Eyes']]){const cols=S.slots[s]||defaults[s];if(!cols)continue;
-      colCard.append(colorRow('slot'+s,el('span',{class:'n',text:label}),cols,n=>{S.slots[s]=n;save();drawColors();previewD()},
+      colBody.append(colorRow('slot'+s,el('span',{class:'n',text:label}),cols,n=>{S.slots[s]=n;save();drawColors();previewD()},
         S.slots[s]?el('button',{class:'btn',text:'reset',onclick:()=>{delete S.slots[s];save();drawColors();previewD()}}):null))}
-    colCard.append(el('div',{class:'mute',text:'Each part uses four colours; the game builds its shades from them. "codes…" lets you paste, copy and save them.'}))}
+    colBody.append(el('div',{class:'mute',text:'Four colours per part. "codes…" lets you paste, copy and save them.'}))}
 
   let searchSeq=0;const q=el('input',{type:'text',placeholder:'search clothing by name, e.g. fox hat'}),res=el('div',{class:'list',hidden:true}),worn=el('div');
   async function search(){const my=++searchSeq;if(!q.value.trim()||S.avatar==null){res.hidden=true;return}try{const r=await getJ('/api/items?q='+encodeURIComponent(q.value)+'&avatar='+S.avatar+'&cat='+(S.cat??'')+'&limit=40');if(my!==searchSeq)return;res.hidden=false;res.replaceChildren();
@@ -1176,17 +1242,18 @@ function gifTab(){
       el('button',{class:'btn',text:have?'added':'add',disabled:have||!it.fits,onclick:()=>{S.wear=S.wear.filter(w=>w.slot!==it.slot);S.wear.push({id:it.id,name:it.name,slot:it.slot,def:norm(it.colors),colors:null});save();drawWorn();search();preview()}})))}
     if(r.total>r.items.length)res.append(el('div',{class:'it mute',text:r.total-r.items.length+' more — narrow the search'}))}catch(e){res.hidden=false;res.textContent=String(e)}}
   q.oninput=debounce(search,250);
-  function drawWorn(){worn.replaceChildren();drawParts();const clothes=S.wear.filter(w=>w.slot>3);if(!clothes.length){worn.append(el('div',{class:'mute',text:'Nothing added. Each slot holds one item; adding another replaces it.',style:'margin-top:8px'}));return}
+  function drawWorn(){worn.replaceChildren();drawParts();const clothes=S.wear.filter(w=>w.slot>3);if(!clothes.length){worn.append(el('div',{class:'mute',text:'Nothing added. One item per slot; a new one replaces the old.',style:'margin-top:6px'}));return}
     for(const w of clothes){worn.append(colorRow('item'+w.id,el('span',{style:'display:inline-flex;gap:6px;align-items:center;flex:1;min-width:130px'},el('b',{text:w.name}),el('span',{class:'tag',text:'slot '+w.slot})),w.colors||w.def,n=>{w.colors=n;save();drawWorn();previewD()},
       [w.colors?el('button',{class:'btn',text:'reset',onclick:()=>{w.colors=null;save();drawWorn();previewD()}}):null,el('button',{class:'btn',text:'remove',onclick:()=>{S.wear=S.wear.filter(x=>x!==w);save();drawWorn();search();previewD()}})]))}}
-  itemCard.append(el('h2',{text:'3 · Clothing'}),q,res,worn);
+  itemBody.append(q,res,worn);
 
   /* preview */
   const canvas=el('canvas'),info=el('div',{class:'mute'}),stage=el('div',{class:'stage'},canvas);const playBtn=el('button',{class:'btn',text:'pause'});let playing=true;
   playBtn.onclick=()=>{playing=!playing;playBtn.textContent=playing?'pause':'play';if(playing)tick()};
   const expMsg=el('span',{class:'mute'}),expBtn=el('button',{class:'btn pri',text:'Export'});
-  right.append(el('div',{class:'card'},el('h2',{text:'Preview'}),stage,el('div',{class:'bar'},playBtn,info),),
-    el('div',{class:'card'},el('h2',{text:'Export'}),el('div',{class:'row'},el('div',{class:'field'},el('label',{text:'Format'}),fmt),el('div',{class:'field',id:'pillfield'},el('label',{text:'GIF encoder'}),pill)),el('div',{class:'bar'},expBtn,expMsg)));
+  const hideBtn=el('button',{class:'btn',text:'hide',title:'hide the picture to see more of the controls',onclick:e=>{stage.hidden=!stage.hidden;e.target.textContent=stage.hidden?'show':'hide'}});
+  right.append(el('div',{class:'card preview'},stage,el('div',{class:'bar'},playBtn,hideBtn,info),
+    el('div',{class:'exportbar'},fmt,el('span',{id:'pillfield'},pill),expBtn,expMsg)));
   function tick(){clearTimeout(timer);if(!frames.length||!playing)return;const f=frames[cur%frames.length];canvas.width=f.width;canvas.height=f.height;const c=canvas.getContext('2d');c.clearRect(0,0,f.width,f.height);c.drawImage(f,0,0);cur++;timer=setTimeout(tick,Math.max(20,+delay.value||80))}
   function request(extra){return{avatar:S.avatar,cat:S.cat,hflip:S.hflip,scale:S.scale,bg:S.bgMode==='color'?S.bg.slice(1):null,slots:S.slots,wear:S.wear.map(w=>({id:w.id,colors:w.colors})),auto:S.auto!==false,...(extra||{})}}
   async function preview(){refreshCode();if(S.avatar==null||S.cat==null)return;if(ctl)ctl.abort();ctl=new AbortController();const my=++seq;msg.textContent=S.auto!==false?'drawing… (fetching anything that is missing)':'drawing…';
@@ -1205,7 +1272,7 @@ function gifTab(){
   bgSel.onchange=()=>{S.bgMode=bgSel.value;bgCol.style.display=S.bgMode==='color'?'':'none';save();previewD()};bgCol.oninput=()=>{S.bg=bgCol.value;save();previewD()};
   async function loadAvatar(keepLook){animSel.disabled=true;animSel.replaceChildren(el('option',{text:'loading…'}));try{await loadAvatarInner(keepLook)}finally{animSel.disabled=false}}
   async function loadAvatarInner(keepLook){defaults=await getJ('/api/avatar-colors?avatar='+S.avatar);for(const k of Object.keys(defaults))defaults[k]=norm(defaults[k]);msg.textContent=S.auto!==false?'checking files (missing ones are downloaded)…':'';anims=await getJ('/api/animations?avatar='+S.avatar+'&auto='+(S.auto!==false?1:0));msg.textContent='';
-    animSel.replaceChildren(...anims.map(a=>el('option',{value:a.cat,text:'Animation '+a.cat+' · '+a.steps+' frame'+(a.steps===1?'':'s')})));
+    animSel.replaceChildren(...anims.map(a=>el('option',{value:a.cat,text:'#'+a.cat+' · '+a.steps+' frame'+(a.steps===1?'':'s')})));
     if(!anims.length){msg.textContent=window.PUBLIC?'This avatar is not available on this server.':'No animations of this avatar are downloaded'+(S.auto!==false?' and none were found on the CDN':' yet. Tick "download missing files automatically", or run: mirror_assets.py --types avatars --avatar '+S.avatar);S.cat=null;frames=[];clearTimeout(timer);drawColors();return}
     if(!anims.some(a=>a.cat===S.cat))S.cat=(anims.find(a=>a.cat===7)||anims[0]).cat;animSel.value=S.cat;msg.textContent='';if(!keepLook){S.slots={};S.wear=[]}save();drawColors();drawWorn();loadParts();previewD()}
   avSel.onchange=async()=>{S.avatar=+avSel.value;note.textContent='';let left_out=[];
@@ -1230,12 +1297,12 @@ function gifTab(){
   document.addEventListener('keydown',e=>{if(!(e.ctrlKey||e.metaKey)||!sections.gif||!sections.gif.s.classList.contains('on'))return;const t=e.target;
     if(t&&(t.tagName==='TEXTAREA'||(t.tagName==='INPUT'&&t.type==='text')))return;const k=e.key.toLowerCase();
     if(k==='z'&&!e.shiftKey){e.preventDefault();undoBtn.click()}else if(k==='y'||(k==='z'&&e.shiftKey)){e.preventDefault();redoBtn.click()}});
-  left.prepend(el('div',{class:'card'},el('div',{class:'bar',style:'margin-top:0'},undoBtn,redoBtn,
+  left.prepend(el('div',{class:'toolbar'},undoBtn,redoBtn,
     el('button',{class:'btn',text:'reset colours',title:'back to the default colours of the avatar and of each item',onclick:()=>{S.slots={};for(const w of S.wear)w.colors=null;save();drawColors();drawWorn();previewD()}}),
-    el('button',{class:'btn',text:'remove all clothing',onclick:()=>{S.wear=S.wear.filter(w=>w.slot<=3);save();drawWorn();search();previewD()}}))));
+    el('button',{class:'btn',text:'clear clothing',title:'take off everything you added (pattern and eyes stay)',onclick:()=>{S.wear=S.wear.filter(w=>w.slot<=3);save();drawWorn();search();previewD()}})));
   const loading=on=>{for(const sel of[avSel,animSel]){sel.disabled=on;if(on)sel.replaceChildren(el('option',{text:'loading…'}))}};
   const init=async()=>{try{loading(true);msg.textContent='loading the game data… (the first time can take a few seconds)';await loadSaves();drawOutfits();avSel.replaceChildren();palette=await getJ('/api/palette');for(const k of Object.keys(S.slots))S.slots[k]=norm(S.slots[k]);for(const w of S.wear){w.def=norm(w.def);w.colors=w.colors?norm(w.colors):null}const avs=await getJ('/api/avatars');
-      avSel.append(...avs.filter(a=>!window.PUBLIC||a.animations>0).map(a=>el('option',{value:a.id,text:a.name+' (#'+a.id+') · '+a.animations+' animation'+(a.animations===1?'':'s')+(window.PUBLIC?' available':' downloaded')})));
+      avSel.append(...avs.filter(a=>!window.PUBLIC||a.animations>0).map(a=>el('option',{value:a.id,text:a.name+' #'+a.id+(window.PUBLIC?'':' · '+a.animations+' downloaded')})));
       if(S.avatar==null||!avs.some(a=>a.id===S.avatar))S.avatar=(avs.find(a=>a.animations>0)||avs[0]).id;avSel.value=S.avatar;
       if(window.PUBLIC&&!window.PUBLIC_DL){S.auto=false;autoChk.parentElement.style.display='none'}flip.checked=S.hflip;autoChk.checked=S.auto!==false;keepChk.checked=S.keep===true;scaleSel.value=S.scale;delay.value=S.delay;loop.checked=S.loop;bgSel.value=S.bgMode;bgCol.value=S.bg;bgCol.style.display=S.bgMode==='color'?'':'none';fmt.onchange();
       await loadAvatar(true);loading(false);hcur=snap();undo.length=0;redo.length=0;updHist()}catch(e){loading(false);msg.innerHTML='';msg.append(el('span',{class:'err',text:'Could not load the game data: '+(e.message||e)+(window.PUBLIC?'. The server may be down, or may not allow this site.':'. Is the cache folder right (see the top of the page)?')}))}};
