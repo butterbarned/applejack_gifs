@@ -58,7 +58,7 @@ python asset_gui.py --cache cache --build 1830 --no-browser --port 8765
   ones play, one button per view), price, members-only flag, group, type, layer, scale and the placement values. The list comes from the game's own
   definitions; the **pictures come from `den-out/`**, which `extract_den_items.py` fills (`--den DIR` tells the page where it is). On
   your own computer the page can also **draw a missing item on the spot** ("draw it now": downloads its files and runs ffdec, a few seconds) and
-  offer the `.swf` for download; in public mode it only shows pictures that are already in the folder, and nothing there can run programs.
+  offer the `.swf` for download (long runs of the command line tool can be stopped and continued: `extract_den_items.py --skip-existing --batch 200`, and need no display); in public mode it only shows pictures that are already in the folder, and nothing there can run programs.
 * **Colours are Burrow colour codes.** Burrow (like the game) stores a colour set as **four palette
   numbers (0-255) packed into one number**, first slot in the top byte:
   `code = n1*16777216 + n2*65536 + n3*256 + n4` (so palette numbers `0 0 255 1` are code `65281`).

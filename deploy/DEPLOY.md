@@ -111,7 +111,32 @@ python extract_den_items.py --cache cache --out den-out            # ~40 minutes
 rsync -av den-out/png den-out/meta.json YOU@SERVER:/tmp/den-out/
 ssh YOU@SERVER 'sudo mkdir -p /srv/asset-tools/den-out && sudo cp -r /tmp/den-out/* /srv/asset-tools/den-out/ && sudo chown -R assettools:assettools /srv/asset-tools/den-out'
 ```
-(`scp -r` works instead of `rsync`.) The page notices new pictures on its own. Without them the tab still lists every den item with its
+(`scp -r` works instead of `rsync`.) The page notices new pictures on its own.
+
+**Or draw them on the server itself** (no copying; the page's "draw it now" button exists only in the private version, so this is the way):
+```bash
+# 1. Java and a font library (ffdec is a Java program; it needs no screen, but Java wants fontconfig); tmux so a dropped SSH link does not stop it
+sudo apt-get install -y default-jre-headless fontconfig fonts-dejavu-core unzip tmux
+
+# 2. JPEXS ffdec: take the newest ffdec_<version>.zip from https://github.com/jindrapetrik/jpexs-decompiler/releases
+sudo mkdir -p /opt/ffdec && sudo unzip -o ~/ffdec_*.zip -d /opt/ffdec && sudo chmod -R a+rX /opt/ffdec
+
+# 3. download the den items, then draw them: both as the service's user, so the files end up in the right place
+tmux new -s den                         # (reconnect later with: tmux attach -t den)
+PY=/srv/asset-tools/venv/bin/python; APP=/srv/asset-tools/app
+sudo -u assettools $PY $APP/mirror_assets.py --types defs,den --out /srv/asset-tools/cache
+sudo -u assettools $PY $APP/extract_den_items.py --cache /srv/asset-tools/cache --out /srv/asset-tools/den-out \
+     --ffdec "java -jar /opt/ffdec/ffdec.jar" --jobs 1 --batch 200 --skip-existing
+```
+* It prints `batch 3 of 30 done ... about N minute(s) left`. Everything finished so far is saved after each batch, so you can stop it
+  (Ctrl+C) and run the **same command** again later: `--skip-existing` makes it carry on where it stopped. If it was killed hard (power cut),
+  also run `sudo rm -rf /srv/asset-tools/den-out/den-*` (leftover work folders) before starting again.
+* `--jobs` is how many ffdec programs run at once, and each uses a few hundred MB. Use `1` on the 1 GB machine (and consider
+  `sudo systemctl stop asset-gui` while it runs, and a 2 GB swap file); on a bigger ARM instance use `2`-`4`. On a laptop with 4 jobs it took about
+  25 seconds per 60 items; I have not timed it on Oracle, so expect anything from about an hour to several hours for all ~6,000.
+* To try it first, add `--limit 30` (draw at most 30 items). To redraw one item: `--item 52` (without `--skip-existing`).
+* Nothing else is needed afterwards: the page re-reads the folder when it changes. Check it: `curl -s -H 'Host: YOUR.DOMAIN' 'http://127.0.0.1:8765/api/den?size=12' | head -c 400`
+  (`"rendered"` is the number of items with pictures). Without them the tab still lists every den item with its
 price and details, just without pictures. For the GitHub Pages site, `--den` is a setting of the server, so nothing changes there.
 
 ## 4. Check it

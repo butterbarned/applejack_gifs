@@ -1020,6 +1020,15 @@ class Handler(BaseHTTPRequestHandler):
             return self.fail(e, 400 if isinstance(e, (ValueError, KeyError)) else 500)
 
 
+def den_status():
+    """one line for the start-up message: which folder the den pictures are read from, and how many there are"""
+    try:
+        n = sum(1 for f in os.listdir(os.path.join(STATE["den"], "png")) if f.endswith(".png"))
+    except OSError:
+        return "den pictures: %s  <- NOT FOUND: the Den items tab will show no pictures (extract_den_items.py --out THAT FOLDER fills it, or fix --den)" % STATE["den"]
+    return "den pictures: %s (%d files)%s" % (STATE["den"], n, "" if n else "  <- EMPTY")
+
+
 def make_parser():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--cache", default="cache", help="folder with the downloaded files (default ./cache)")
@@ -1063,17 +1072,17 @@ def main():
     srv.daemon_threads = True
     port = srv.server_address[1]
     if a.public:
-        print("Asset tools PUBLIC page on http://%s:%d/  (cache %s, build %s)\n  downloads from the CDN: %s; %d draws at once; %d previews/exports per visitor per minute\n  pages allowed to call it from elsewhere: %s\n  behind a reverse proxy? add --trust-proxy and --allowed-host YOUR.SITE"
+        print("Asset tools PUBLIC page on http://%s:%d/  (cache %s, build %s)\n  downloads from the CDN: %s; %d draws at once; %d previews/exports per visitor per minute\n  pages allowed to call it from elsewhere: %s\n  %s\n  behind a reverse proxy? add --trust-proxy and --allowed-host YOUR.SITE"
               % (a.host, port, STATE["cache"], a.build, "ON" if a.allow_download else "off", max(1, a.max_concurrent), STATE["rate"],
-                 ", ".join(STATE["cors"]) or "none"), flush=True)
+                 ", ".join(STATE["cors"]) or "none", den_status()), flush=True)
         try:
             srv.serve_forever()
         except KeyboardInterrupt:
             print("\nstopped")
         return
     url = "http://127.0.0.1:%d/?t=%s" % (port, STATE["token"])
-    print("Asset tools page: %s\n  cache: %s (build %s)\n  scripts run in: %s\n  saved colours/outfits: %s\n  Ctrl+C to stop"
-          % (url, STATE["cache"], a.build, STATE["workdir"], STATE["saves"]))
+    print("Asset tools page: %s\n  cache: %s (build %s)\n  scripts run in: %s\n  saved colours/outfits: %s\n  %s\n  Ctrl+C to stop"
+          % (url, STATE["cache"], a.build, STATE["workdir"], STATE["saves"], den_status()))
     if not a.no_browser:
         threading.Timer(0.6, lambda: webbrowser.open(url)).start()
     try:

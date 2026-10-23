@@ -17,6 +17,9 @@ options: --cache DIR (default cache)  --build N (1830)  --out DIR (default den-o
          --jobs N      parallel ffdec processes (default 4; each is a Java process)
          --no-crop     keep ffdec's full-stage canvas instead of trimming to the drawing
          --limit N     stop after N files (for a trial)
+         --skip-existing  leave items that already have a picture alone (to continue an interrupted run)
+         --batch N     draw and save N items at a time, with progress and a time estimate (use with --skip-existing
+                       for long runs: stop with Ctrl+C and start the same command again to carry on)
 
 FILES (the game: loader/DenItemHelper, DenItemServer; den/DenItem.getIconId)
   items/<hash(str(defId << 16 | category))> is an AMF3 object {v, ba, cx, cy, so, r}:
@@ -28,7 +31,7 @@ FILES (the game: loader/DenItemHelper, DenItemServer; den/DenItem.getIconId)
 OUTPUT  OUT/swf/<defId>_c<cat>_<name>.swf   OUT/png/<defId>_c<cat>_<name>[_fNN].png
         OUT/meta.json  {file: {defId, category, name, cx, cy, so, r, frames}}
 """
-import argparse, json, os, shutil, struct, subprocess, sys, tempfile, zlib
+import argparse, json, os, shutil, struct, subprocess, sys, tempfile, time, zlib
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -181,8 +184,12 @@ def find_ffdec(arg):
 
 
 def render_chunk(cmd, swf_dir, out_dir):
+    # headless: no window system is needed (a server has none) and nothing pops up on a desktop either
+    env = dict(os.environ)
+    if "java.awt.headless" not in env.get("JAVA_TOOL_OPTIONS", ""):
+        env["JAVA_TOOL_OPTIONS"] = (env.get("JAVA_TOOL_OPTIONS", "") + " -Djava.awt.headless=true").strip()
     r = subprocess.run(cmd + ["-format", "frame:png", "-export", "frame", out_dir, swf_dir],
-                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
     return r.returncode
 
 
@@ -211,6 +218,8 @@ def make_parser():
     ap.add_argument("--no-render", action="store_true")
     ap.add_argument("--no-crop", action="store_true")
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--skip-existing", action="store_true")
+    ap.add_argument("--batch", type=int, default=0)
     return ap
 
 
@@ -218,11 +227,68 @@ def main():
     run(make_parser().parse_args())
 
 
+def render_batch(a, cmd, batch, swf_dir, png_dir, meta):
+    """draw these items (base names) with ffdec and save the trimmed pictures; returns how many PNG frames were written"""
+    work = tempfile.mkdtemp(prefix="den-", dir=a.out)
+    try:
+        jobs = max(1, min(a.jobs, len(batch)))
+        chunks = []
+        for k in range(jobs):
+            d = os.path.join(work, "in%d" % k)
+            os.makedirs(d)
+            chunks.append((d, os.path.join(work, "out%d" % k)))
+        for i, base in enumerate(batch):
+            src = os.path.join(swf_dir, base + ".swf")
+            dst = os.path.join(chunks[i % jobs][0], base + ".swf")
+            with open(src, "rb") as f_in, open(dst, "wb") as f_out:
+                f_out.write(strip_background(f_in.read()))
+        with ThreadPoolExecutor(jobs) as ex:
+            codes = list(ex.map(lambda c: render_chunk(cmd, c[0], c[1]), chunks))
+        if any(codes):
+            print("warning: ffdec exited with %s" % codes)
+        tasks = []
+        for _, outd in chunks:
+            if not os.path.isdir(outd):
+                continue
+            for entry in sorted(os.listdir(outd)):
+                base = entry[:-4] if entry.endswith(".swf") else entry
+                frames = sorted((f for f in os.listdir(os.path.join(outd, entry)) if f.endswith(".png")),
+                                key=lambda f: int(os.path.splitext(f)[0]))
+                if base in meta:
+                    meta[base]["frames"] = len(frames)
+                pairs = []
+                for n, fn in enumerate(frames, 1):
+                    name = base + (".png" if len(frames) == 1 else "_f%02d.png" % n)
+                    pairs.append((os.path.join(outd, entry, fn), os.path.join(png_dir, name)))
+                tasks.append((pairs, not a.no_crop))
+        with ProcessPoolExecutor(os.cpu_count() or 1) as ex:
+            return sum(ex.map(save_group, tasks, chunksize=8))
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def write_meta(a, meta):
+    """meta.json is merged, not replaced: a run with --item must not wipe what earlier runs wrote down"""
+    meta_path = os.path.join(a.out, "meta.json")
+    try:
+        with open(meta_path) as f:
+            old = json.load(f)
+    except (OSError, ValueError):
+        old = {}
+    old.update(meta)
+    tmp = meta_path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(old, f, indent=1)
+    os.replace(tmp, meta_path)
+
+
 def run(a):
     """unwrap (and, unless a.no_render, render) den items. `a` is what make_parser() gives (asset_gui.py builds one itself).
-    Several runs add to the same folder: meta.json is merged, not replaced. Returns {"swf": files written, "png": frames
-    written, "ffdec": whether ffdec was found}. Exits (SystemExit) with a message when the cache lacks what it needs."""
-    done, cmd = 0, None
+    Several runs add to the same folder. With a.skip_existing, items that already have a picture are left alone, and with
+    a.batch the work is done (and saved) that many items at a time, so an interrupted run can simply be started again.
+    Returns {"swf": files written, "png": frames written, "ffdec": whether ffdec was found, "skipped": items already done}.
+    Exits (SystemExit) with a message when the cache lacks what it needs."""
+    done, cmd, skipped = 0, None, 0
 
     defp = os.path.join(a.cache, *M.hashed(a.build, "defPacks/1030").split("/"))
     if not os.path.exists(defp):
@@ -245,13 +311,16 @@ def run(a):
             p = os.path.join(root, M.hash_name(str(did << 16 | cat)))
             if not os.path.isfile(p):
                 continue
+            base = "%d_c%d_%s" % (did, cat, name) if name else "%d_c%d" % (did, cat)
+            if a.skip_existing and (os.path.exists(os.path.join(png_dir, base + ".png")) or os.path.exists(os.path.join(png_dir, base + "_f01.png"))):
+                skipped += 1
+                continue
             try:
                 o = M.AMF3(open(p, "rb").read()).value()
                 swf = o["ba"]
             except (ValueError, IndexError, KeyError, TypeError) as e:
                 print("skip item %d cat %d: %s" % (did, cat, e))
                 continue
-            base = "%d_c%d_%s" % (did, cat, name) if name else "%d_c%d" % (did, cat)
             with open(os.path.join(swf_dir, base + ".swf"), "wb") as f:
                 f.write(swf)
             meta[base] = {"defId": did, "category": cat, "name": rows[did].get("abbrName"),
@@ -262,63 +331,26 @@ def run(a):
                 break
         if a.limit and len(todo) >= a.limit:
             break
-    print("%d den item files unwrapped to %s" % (len(todo), swf_dir))
+    print("%d den item files to draw (%d already had pictures and were skipped); unwrapped to %s" % (len(todo), skipped, swf_dir), flush=True)
 
     if not a.no_render and todo:
         cmd = find_ffdec(a.ffdec)
         if not cmd:
             print("ffdec not found: the .swf files are written; install JPEXS ffdec or pass --ffdec to make PNGs")
         else:
-            work = tempfile.mkdtemp(prefix="den-", dir=a.out)
-            try:
-                jobs = max(1, min(a.jobs, len(todo)))
-                chunks = []
-                for k in range(jobs):
-                    d = os.path.join(work, "in%d" % k)
-                    os.makedirs(d)
-                    chunks.append((d, os.path.join(work, "out%d" % k)))
-                for i, base in enumerate(todo):
-                    src = os.path.join(swf_dir, base + ".swf")
-                    dst = os.path.join(chunks[i % jobs][0], base + ".swf")
-                    with open(src, "rb") as f_in, open(dst, "wb") as f_out:
-                        f_out.write(strip_background(f_in.read()))
-                print("rendering with %s in %d process(es) ..." % (" ".join(cmd), jobs), flush=True)
-                with ThreadPoolExecutor(jobs) as ex:
-                    codes = list(ex.map(lambda c: render_chunk(cmd, c[0], c[1]), chunks))
-                if any(codes):
-                    print("warning: ffdec exited with %s" % codes)
-                tasks = []
-                for _, outd in chunks:
-                    if not os.path.isdir(outd):
-                        continue
-                    for entry in sorted(os.listdir(outd)):
-                        base = entry[:-4] if entry.endswith(".swf") else entry
-                        frames = sorted((f for f in os.listdir(os.path.join(outd, entry)) if f.endswith(".png")),
-                                        key=lambda f: int(os.path.splitext(f)[0]))
-                        if base in meta:
-                            meta[base]["frames"] = len(frames)
-                        pairs = []
-                        for n, fn in enumerate(frames, 1):
-                            name = base + (".png" if len(frames) == 1 else "_f%02d.png" % n)
-                            pairs.append((os.path.join(outd, entry, fn), os.path.join(png_dir, name)))
-                        tasks.append((pairs, not a.no_crop))
-                print("trimming and saving %d items ..." % len(tasks), flush=True)
-                with ProcessPoolExecutor(os.cpu_count() or 1) as ex:
-                    done = sum(ex.map(save_group, tasks, chunksize=8))
-                print("%d PNG frames written to %s" % (done, png_dir))
-            finally:
-                shutil.rmtree(work, ignore_errors=True)
-
-    meta_path = os.path.join(a.out, "meta.json")
-    try:
-        with open(meta_path) as f:
-            old = json.load(f)
-    except (OSError, ValueError):
-        old = {}
-    old.update(meta)  # a run with --item must not wipe what earlier runs wrote down
-    with open(meta_path, "w") as f:
-        json.dump(old, f, indent=1)
-    return {"swf": len(todo), "png": done, "ffdec": bool(cmd)}
+            size = a.batch if a.batch and a.batch > 0 else len(todo)
+            batches = [todo[i:i + size] for i in range(0, len(todo), size)]
+            print("drawing with %s, %d process(es) at a time, in %d batch(es)" % (" ".join(cmd), max(1, min(a.jobs, size)), len(batches)), flush=True)
+            started = time.time()
+            for n, batch in enumerate(batches, 1):
+                done += render_batch(a, cmd, batch, swf_dir, png_dir, meta)
+                write_meta(a, {b: meta[b] for b in batch})  # saved after every batch: stopping now loses at most this one
+                finished = sum(len(b) for b in batches[:n])
+                rate = finished / max(1, time.time() - started)
+                print("batch %d of %d done: %d of %d items, %d picture frames so far, about %d minute(s) left" % (
+                    n, len(batches), finished, len(todo), done, round((len(todo) - finished) / max(rate, 0.01) / 60)), flush=True)
+    write_meta(a, meta)
+    return {"swf": len(todo), "png": done, "ffdec": bool(cmd), "skipped": skipped}
 
 
 if __name__ == "__main__":
