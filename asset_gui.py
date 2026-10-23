@@ -927,6 +927,7 @@ nav{display:flex;gap:2px;padding:8px 18px 0;flex-wrap:wrap;background:var(--pane
 nav button{border:1px solid transparent;border-bottom:none;background:none;color:var(--mute);padding:7px 14px;border-radius:8px 8px 0 0;cursor:pointer;font:inherit}
 nav button.on{background:var(--bg);color:var(--ink);border-color:var(--line);font-weight:600}
 main{padding:16px 18px;max-width:1280px;margin:0 auto}
+footer{padding:8px 18px 28px;text-align:center;color:var(--mute);font-size:12px}
 section{display:none}section.on{display:block}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px;margin-bottom:14px}
 h2{font-size:14px;margin:0 0 10px}
@@ -967,6 +968,7 @@ input.bad{border-color:var(--bad)!important}textarea.code{font:12px ui-monospace
 <small id="info">loading…</small></header>
 <nav id="tabs"></nav>
 <main id="main"></main>
+<footer>slopped together by berrycon</footer>
 <script>
 const TOKEN="__TOKEN__";
 const API=String(window.API_BASE||'').replace(/\/+$/,'');   // set by config.js on a static site; empty when the server serves the page itself
